@@ -1,0 +1,36 @@
+// services/socketService.js
+let ioInstance;
+
+// Function to initialize Socket.IO and store its instance
+const initializeSocketIO = (httpServer, corsOptions) => {
+  ioInstance = require('socket.io')(httpServer, { cors: corsOptions });
+
+  ioInstance.on('connection', (socket) => {
+    console.log('A user connected via WebSocket:', socket.id);
+
+    // When a client registers for updates, join them to a private room using their user ID
+    socket.on('registerForUpdates', (userId) => {
+      socket.join(userId);
+      console.log(`User ${userId} registered socket ${socket.id} for real-time updates.`);
+    });
+
+    socket.on('disconnect', () => {
+      console.log('User disconnected via WebSocket:', socket.id);
+    });
+  });
+
+  return ioInstance;
+};
+
+// Function to get the Socket.IO instance
+const getSocketIO = () => {
+  if (!ioInstance) {
+    throw new Error('Socket.IO not initialized. Call initializeSocketIO first.');
+  }
+  return ioInstance;
+};
+
+module.exports = {
+  initializeSocketIO,
+  getSocketIO
+};

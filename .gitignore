@@ -1,0 +1,57 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+.DS_Store # macOS specific
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# npm package manager cache
+.npm/
+
+# Logs
+*.log
+logs/
+*.json.log
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+.history/ # VS Code local history
+
+# Build artifacts
+dist/
+build/
+coverage/
+
+# Test reports
+junit.xml
+test-results.xml
+
+# macOS specific files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux specific files
+.Trash-?*
+
+# Windows specific files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Yarn Integrity file
+.yarn-integrity
+
+# Firebase Admin SDK credentials (if used directly, though base64 in .env is more common for Heroku)
+# If you ever place a raw service account JSON directly in the project and don't base64 encode it
+# then it should also be ignored like:
+# *.json
+# serviceAccountKey.json
