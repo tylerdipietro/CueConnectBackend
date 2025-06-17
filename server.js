@@ -116,14 +116,19 @@ app.post('/stripe-webhook', express.raw({type: 'application/json'}), async (req,
 // This must be after the raw body webhook handler if it's used.
 app.use(express.json());
 
-// Apply Firebase token verification middleware to all API routes below this point.
-app.use('/api/*', verifyFirebaseToken);
+// --- Define an API Router and apply authentication middleware to it ---
+const apiRouter = express.Router();
+apiRouter.use(verifyFirebaseToken); // Apply Firebase token verification to all routes mounted on apiRouter
 
-// --- API Route Mounting ---
-app.use('/api/users', userRoutes);
-app.use('/api/venues', venueRoutes);
-app.use('/api/tables', tableRoutes);
-app.use('/api/payments', paymentRoutes);
+// --- Mount all other route modules to the API Router ---
+apiRouter.use('/users', userRoutes);
+apiRouter.use('/venues', venueRoutes);
+apiRouter.use('/tables', tableRoutes);
+apiRouter.use('/payments', paymentRoutes);
+
+// --- Mount the API Router to the main app under '/api' prefix ---
+app.use('/api', apiRouter);
+
 
 // --- Root Route (Optional) ---
 app.get('/', (req, res) => {
