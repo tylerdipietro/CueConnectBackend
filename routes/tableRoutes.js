@@ -2,11 +2,78 @@
 const express = require('express');
 const router = express.Router();
 const Table = require('../models/Table'); // Table model
-const Venue = require('../models/Venue'); // Venue model (for perGameCost)
+const Venue = require('../models/Venue'); // Venue model (for perGameCost and updating tableIds)
 const Session = require('../models/Session'); // Session model
 const { getSocketIO } = require('../services/socketService'); // Socket.IO instance
 const { sendPushNotification } = require('../services/notificationService'); // Push notification service
 const { inviteNextPlayer } = require('../services/gameService'); // Game logic service
+
+/**
+ * @route POST /api/tables
+ * @description Registers a new individual table for a specific venue.
+ * @access Private (requires Firebase auth token and admin privileges)
+ * @body venueId, tableNumber, esp32DeviceId
+ */
+router.post('/', async (req, res) => {
+  // Ensure the user is an admin
+  // This check relies on `req.user.isAdmin` being set by the `verifyFirebaseToken` middleware in server.js
+  if (!req.user || req.user.isAdmin !== true) {
+    return res.status(403).json({ message: 'Forbidden: Admin access required to register tables.' });
+  }
+
+  const { venueId, tableNumber, esp32DeviceId } = req.body;
+
+  if (!venueId || !tableNumber || !esp32DeviceId) {
+    return res.status(400).json({ message: 'Venue ID, Table Number, and ESP32 Device ID are required.' });
+  }
+
+  try {
+    // 1. Verify if the venueId actually exists
+    const venue = await Venue.findById(venueId);
+    if (!venue) {
+      return res.status(404).json({ message: 'Venue not found.' });
+    }
+
+    // 2. Check for duplicate esp32DeviceId (assuming it's unique across all tables)
+    const existingTableWithEsp32Id = await Table.findOne({ esp32DeviceId: esp32DeviceId });
+    if (existingTableWithEsp32Id) {
+        return res.status(409).json({ message: 'Another table with this ESP32 Device ID already exists.' });
+    }
+
+    // 3. Check for duplicate tableNumber within the same venue
+    const existingTableInVenue = await Table.findOne({ venueId: venueId, tableNumber: tableNumber });
+    if (existingTableInVenue) {
+        return res.status(409).json({ message: `Table number "${tableNumber}" already exists in this venue.` });
+    }
+
+    // 4. Create the new Table document
+    const newTable = new Table({
+      venueId,
+      tableNumber,
+      esp32DeviceId,
+      status: 'available', // Default status for a newly registered table
+      currentPlayers: { player1Id: null, player2Id: null },
+      currentSessionId: null,
+      queue: [],
+      lastGameEndedAt: null,
+    });
+    const savedTable = await newTable.save();
+
+    // 5. Update the associated Venue document to include the new table's ID
+    // We use $push to add the new table's ID to the tableIds array
+    // We also increment numberOfTables, ensuring this count reflects individually added tables
+    await Venue.findByIdAndUpdate(
+        venueId,
+        { $push: { tableIds: savedTable._id }, $inc: { numberOfTables: 1 } },
+        { new: true, useFindAndModify: false } // `new: true` returns the updated document
+    );
+
+    res.status(201).json(savedTable); // Respond with the newly created table
+  } catch (error) {
+    console.error('Error registering table:', error.message);
+    res.status(500).json({ message: 'Failed to register table. Please try again later.' });
+  }
+});
 
 /**
  * @route POST /api/tables/:tableId/join-queue

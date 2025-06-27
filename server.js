@@ -1,32 +1,28 @@
 // backend/server.js
-// Main entry point for the CueConnect Node.js/Express backend server.
-// This file sets up the Express app, configures middleware, initializes services,
-// mounts route handlers, and starts the server.
-
 const express = require('express');
-const http = require('http'); // Used to create HTTP server for Socket.IO
-const { config, initializeServices } = require('./config'); // Centralized config and service initialization
-const { initializeSocketIO } = require('./services/socketService'); // Socket.IO service
-const { getStripeInstance } = require('./config/stripe'); // Stripe instance for webhooks
+const http = require('http');
+const { config, initializeServices } = require('./config');
+const { initializeSocketIO } = require('./services/socketService');
+const { getStripeInstance } = require('./config/stripe');
 
 // Import route modules
-const verifyFirebaseToken = require('./routes/authRoutes'); // Auth middleware
+// const verifyFirebaseToken = require('./routes/authRoutes'); // We'll modify this directly here or integrate it.
 const userRoutes = require('./routes/userRoutes');
 const venueRoutes = require('./routes/venueRoutes');
 const tableRoutes = require('./routes/tableRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
-const Session = require('./models/Session'); // Session model for webhook
-const User = require('./models/User'); // User model for webhook
+const Session = require('./models/Session');
+const User = require('./models/User'); // Import User model
+const admin = require('firebase-admin'); // Import Firebase Admin SDK
 
 // --- Initialize Express App and HTTP Server ---
 const app = express();
-const server = http.createServer(app); // Create HTTP server for Socket.IO attachment
+const server = http.createServer(app);
 
 // --- Initialize Services (MongoDB, Firebase Admin, Stripe SDK) ---
 initializeServices();
 
 // --- Initialize Socket.IO ---
-// Pass the HTTP server instance and CORS options to the socket service
 const io = initializeSocketIO(server, {
   cors: {
     origin: "*", // IMPORTANT: Adjust this to your React Native app's specific origin in production
@@ -35,11 +31,11 @@ const io = initializeSocketIO(server, {
 });
 
 // --- Stripe Webhook Endpoint (MUST be before express.json() for raw body) ---
-// This endpoint receives events from Stripe.
 app.post('/stripe-webhook', express.raw({type: 'application/json'}), async (req, res) => {
+  // ... (Keep your existing Stripe webhook logic here, no changes needed) ...
   const sig = req.headers['stripe-signature'];
   let event;
-  const stripe = getStripeInstance(); // Get the initialized Stripe instance
+  const stripe = getStripeInstance();
 
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, config.STRIPE_WEBHOOK_SECRET);
@@ -48,13 +44,11 @@ app.post('/stripe-webhook', express.raw({type: 'application/json'}), async (req,
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle different Stripe event types
   switch (event.type) {
     case 'payment_intent.succeeded':
       const paymentIntent = event.data.object;
       console.log(`Webhook: PaymentIntent ${paymentIntent.id} succeeded!`);
 
-      // Extract custom metadata added during PaymentIntent creation
       const userId = paymentIntent.metadata.userId;
       const purchasedTokens = parseInt(paymentIntent.metadata.tokensAmount);
       const sessionType = paymentIntent.metadata.sessionType;
@@ -86,7 +80,6 @@ app.post('/stripe-webhook', express.raw({type: 'application/json'}), async (req,
                 await newSession.save();
             }
 
-            // Emit Socket.IO event to the specific user to update their balance in real-time
             io.to(userId).emit('tokenBalanceUpdate', { newBalance: user.tokenBalance });
           } else {
             console.error(`Webhook: User ${userId} not found in DB for PaymentIntent ${paymentIntent.id}.`);
@@ -102,7 +95,6 @@ app.post('/stripe-webhook', express.raw({type: 'application/json'}), async (req,
     case 'payment_intent.payment_failed':
       const paymentIntentFailed = event.data.object;
       console.log(`Webhook: PaymentIntent ${paymentIntentFailed.id} failed. Reason: ${paymentIntentFailed.last_payment_error?.message || 'Unknown reason'}.`);
-      // Implement logic to update session status or notify user about failed payment
       break;
     default:
       console.log(`Webhook: Unhandled event type ${event.type}.`);
@@ -112,13 +104,71 @@ app.post('/stripe-webhook', express.raw({type: 'application/json'}), async (req,
 });
 
 // --- Middleware Setup ---
-// Enable Express to parse JSON request bodies.
-// This must be after the raw body webhook handler if it's used.
 app.use(express.json());
+
+// --- Custom Firebase Token Verification and User Data Fetching Middleware ---
+// This middleware will be used for all protected API routes.
+const verifyFirebaseToken = async (req, res, next) => {
+  const headerToken = req.headers.authorization;
+  if (!headerToken || !headerToken.startsWith('Bearer ')) {
+    return res.status(401).send('Unauthorized: No token provided or token format is invalid.');
+  }
+  const idToken = headerToken.split('Bearer ')[1];
+
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    req.user = decodedToken; // Attach Firebase decoded token to request object
+
+    // Fetch user details from MongoDB using the Firebase UID
+    const dbUser = await User.findById(decodedToken.uid);
+
+    if (!dbUser) {
+      // If user doesn't exist in your DB, create a new entry.
+      // This handles initial sign-ups where user info might not be in MongoDB yet.
+      const newUser = new User({
+        _id: decodedToken.uid, // Use Firebase UID as _id
+        displayName: decodedToken.name || decodedToken.email.split('@')[0],
+        email: decodedToken.email,
+        tokenBalance: 0,
+        isAdmin: false, // Default to non-admin for new users
+        fcmTokens: []
+      });
+      await newUser.save();
+      req.user.isAdmin = false; // Set isAdmin for the current request
+      console.log(`[Auth] New user ${decodedToken.uid} created in MongoDB.`);
+    } else {
+      // Attach isAdmin status from MongoDB to the request user object
+      req.user.isAdmin = dbUser.isAdmin;
+      req.user.tokenBalance = dbUser.tokenBalance; // Also attach token balance
+    }
+    next(); // Proceed to the next middleware/route handler
+  } catch (error) {
+    console.error('Error verifying Firebase ID token or fetching user data:', error);
+    res.status(401).send('Unauthorized: Invalid or expired token or user data issue.');
+  }
+};
 
 // --- Define an API Router and apply authentication middleware to it ---
 const apiRouter = express.Router();
 apiRouter.use(verifyFirebaseToken); // Apply Firebase token verification to all routes mounted on apiRouter
+
+// --- Mount the /api/user/profile route ---
+// This route is now simpler as `req.user` will have `isAdmin` already populated.
+apiRouter.get('/user/profile', (req, res) => {
+  // `req.user` is populated by `verifyFirebaseToken` middleware
+  if (req.user) {
+    res.json({
+      uid: req.user.uid,
+      email: req.user.email,
+      displayName: req.user.name,
+      isAdmin: req.user.isAdmin || false, // Ensure isAdmin is always a boolean
+      tokenBalance: req.user.tokenBalance || 0, // Ensure tokenBalance is available
+    });
+  } else {
+    res.status(401).send('User not authenticated.');
+  }
+});
+
 
 // --- Mount all other route modules to the API Router ---
 apiRouter.use('/users', userRoutes);
