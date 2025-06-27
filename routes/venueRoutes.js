@@ -5,23 +5,49 @@ const Venue = require('../models/Venue'); // Venue model
 const Table = require('../models/Table'); // Table model
 
 /**
+ * @route GET /api/venues
+ * @description Retrieves a list of all venues (admin only).
+ * @access Private (requires Firebase auth token & admin privileges)
+ */
+router.get('/', async (req, res) => {
+  // This check is crucial for admin-only routes
+  if (!req.user || req.user.isAdmin !== true) {
+    return res.status(403).json({ message: 'Forbidden: Admin access required.' });
+  }
+
+  try {
+    const venues = await Venue.find({}); // Fetch all venues
+    res.json(venues);
+  } catch (error) {
+    console.error('Error fetching all venues for admin:', error.message);
+    res.status(500).json({ message: 'Failed to fetch all venues. Please try again later.' });
+  }
+});
+
+
+/**
  * @route GET /api/venues/nearby
  * @description Retrieves a list of nearby bars/venues based on provided coordinates.
  * @access Private (requires Firebase auth token & `verifyFirebaseToken` middleware)
  * @query lat (latitude), lng (longitude), radiusMiles (search radius in miles)
  */
 router.get('/nearby', async (req, res) => {
-  const { lat, lng, radiusMiles } = req.query;
+  // Ensure the user is authenticated, even if not admin for this route
+  if (!req.user) {
+    return res.status(401).json({ message: 'Unauthorized: Authentication required to find nearby venues.' });
+  }
+
+  const { lat, lng, radiusMiles } = req.query; // Backend expects radiusMiles
 
   if (!lat || !lng || !radiusMiles) {
-    return res.status(400).send('Latitude, longitude, and radius are required query parameters.');
+    return res.status(400).send('Latitude, longitude, and radiusMiles are required query parameters.');
   }
 
   const radiusKm = parseFloat(radiusMiles) * 1.60934; // Convert miles to kilometers
   const radiusMeters = radiusKm * 1000; // Convert kilometers to meters
 
   if (isNaN(radiusMeters) || radiusMeters <= 0) {
-      return res.status(400).send('Invalid radius provided.');
+      return res.status(400).send('Invalid radiusMiles provided.');
   }
 
   try {
@@ -110,6 +136,11 @@ router.post('/', async (req, res) => {
  * @access Private (requires Firebase auth token & `verifyFirebaseToken` middleware)
  */
 router.get('/:venueId/tables', async (req, res) => {
+  // Ensure the user is authenticated for this route
+  if (!req.user) {
+    return res.status(401).json({ message: 'Unauthorized: Authentication required to view tables.' });
+  }
+
   try {
     const tables = await Table.find({ venueId: req.params.venueId }).lean();
     res.json(tables);
