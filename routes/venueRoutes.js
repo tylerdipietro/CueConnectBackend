@@ -29,7 +29,7 @@ router.get('/', async (req, res) => {
  * @route GET /api/venues/nearby
  * @description Retrieves a list of nearby bars/venues based on provided coordinates.
  * @access Private (requires Firebase auth token & `verifyFirebaseToken` middleware)
- * @query lat (latitude), lng (longitude), radiusMiles (search radius in miles)
+ * @query lat (latitude), lon (longitude), radiusMiles (search radius in miles)
  */
 router.get('/nearby', async (req, res) => {
   // Ensure the user is authenticated, even if not admin for this route
@@ -37,24 +37,24 @@ router.get('/nearby', async (req, res) => {
     return res.status(401).json({ message: 'Unauthorized: Authentication required to find nearby venues.' });
   }
 
-  const { lat, lng, radiusMiles } = req.query; // Backend expects radiusMiles
+  // Explicitly parse query parameters as numbers for robustness
+  const lat = parseFloat(req.query.lat);
+  const lon = parseFloat(req.query.lon);
+  const radiusMiles = parseFloat(req.query.radiusMiles); // Ensure this matches frontend's 'radiusMiles'
 
-  if (!lat || !lng || !radiusMiles) {
-    return res.status(400).send('Latitude, longitude, and radiusMiles are required query parameters.');
+  if (isNaN(lat) || isNaN(lon) || isNaN(radiusMiles) || radiusMiles <= 0) {
+    console.error(`Missing or invalid query parameters: lat=${req.query.lat}, lon=${req.query.lon}, radiusMiles=${req.query.radiusMiles}`);
+    return res.status(400).json({ message: 'Latitude, longitude, and radiusMiles are required query parameters and must be valid numbers.' });
   }
 
-  const radiusKm = parseFloat(radiusMiles) * 1.60934; // Convert miles to kilometers
+  const radiusKm = radiusMiles * 1.60934; // Convert miles to kilometers
   const radiusMeters = radiusKm * 1000; // Convert kilometers to meters
-
-  if (isNaN(radiusMeters) || radiusMeters <= 0) {
-      return res.status(400).send('Invalid radiusMiles provided.');
-  }
 
   try {
     const venues = await Venue.aggregate([
       {
         $geoNear: {
-          near: { type: 'Point', coordinates: [parseFloat(lng), parseFloat(lat)] },
+          near: { type: 'Point', coordinates: [lon, lat] }, // MongoDB expects [longitude, latitude]
           distanceField: 'dist.calculated',
           maxDistance: radiusMeters,
           spherical: true,
@@ -66,7 +66,7 @@ router.get('/nearby', async (req, res) => {
     res.json(venues);
   } catch (error) {
     console.error('Error fetching nearby venues:', error.message);
-    res.status(500).send('Failed to fetch nearby venues. Please try again later.');
+    res.status(500).json({ message: 'Failed to fetch nearby venues. Please try again later.' });
   }
 });
 
