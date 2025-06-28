@@ -15,10 +15,12 @@ const populateQueueWithUserDetails = async (queueIds) => {
   if (queueIds.length === 0) {
     return [];
   }
-  const users = await User.find({ _id: { $in: queueIds } }).select('displayName -_id').lean();
+  // FIX: Removed '-_id' from select. Mongoose includes _id by default,
+  // ensuring 'user._id' is available for matching against 'uid'.
+  const users = await User.find({ _id: { $in: queueIds } }).select('displayName').lean();
   // Map back to maintain order and include _id (Firebase UID)
   const populatedQueue = queueIds.map(uid => {
-    const user = users.find(u => u._id === uid);
+    const user = users.find(u => u._id === uid); // 'user._id' will now be correctly available
     return { _id: uid, displayName: user ? user.displayName : 'Unnamed User' };
   });
   return populatedQueue;
@@ -289,7 +291,7 @@ router.post('/:tableId/clear-queue', async (req, res) => {
     await table.save();
 
     // Queue is empty, so populatedQueue will be empty too
-    const populatedQueue = [];
+    const populatedQueue = []; // An empty array is the correct populated queue here
 
     const io = getSocketIO();
     io.to(table.venueId.toString()).emit('queueUpdate', {
