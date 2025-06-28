@@ -3,7 +3,26 @@ const express = require('express');
 const router = express.Router();
 const Table = require('../models/Table');
 const Venue = require('../models/Venue');
+const User = require('../models/User'); // NEW: Import User model
 const { getSocketIO } = require('../services/socketService');
+
+/**
+ * Helper function to populate queue with user display names
+ * @param {Array<string>} queueIds - Array of user UIDs (strings)
+ * @returns {Promise<Array<{_id: string, displayName: string}>>}
+ */
+const populateQueueWithUserDetails = async (queueIds) => {
+  if (queueIds.length === 0) {
+    return [];
+  }
+  const users = await User.find({ _id: { $in: queueIds } }).select('displayName -_id').lean();
+  // Map back to maintain order and include _id (Firebase UID)
+  const populatedQueue = queueIds.map(uid => {
+    const user = users.find(u => u._id === uid);
+    return { _id: uid, displayName: user ? user.displayName : 'Unnamed User' };
+  });
+  return populatedQueue;
+};
 
 /**
  * @route POST /api/tables
@@ -60,7 +79,7 @@ router.post('/', async (req, res) => {
 
 /**
  * @route GET /api/venues/:venueId/tables
- * @description Retrieves all tables for a specific venue, populating queue user display names.
+ * @description Retrieves all tables for a specific venue, manually populating queue user display names.
  * @access Private (requires Firebase auth token)
  */
 router.get('/:venueId/tables', async (req, res) => {
@@ -69,14 +88,15 @@ router.get('/:venueId/tables', async (req, res) => {
   }
 
   try {
-    const tables = await Table.find({ venueId: req.params.venueId })
-      .populate({
-        path: 'queue',
-        select: 'displayName -_id'
-      })
-      .lean();
+    const tables = await Table.find({ venueId: req.params.venueId }).lean();
 
-    res.json(tables);
+    // Manually populate display names for each table's queue
+    const tablesWithPopulatedQueue = await Promise.all(tables.map(async (table) => {
+      const populatedQueue = await populateQueueWithUserDetails(table.queue);
+      return { ...table, queue: populatedQueue };
+    }));
+
+    res.json(tablesWithPopulatedQueue);
   } catch (error) {
     console.error('Error fetching tables for venue:', error.message);
     res.status(500).send('Failed to fetch tables for the venue.');
@@ -167,29 +187,25 @@ router.post('/:tableId/join-queue', async (req, res) => {
       return res.status(404).json({ message: 'Table not found.' });
     }
 
-    if (table.queue.some(userInQueueId => userInQueueId.toString() === userId)) {
+    if (table.queue.includes(userId)) { // Check if string UID is already in the array
       return res.status(409).json({ message: 'You are already in this table\'s queue.' });
     }
 
     table.queue.push(userId);
     await table.save();
 
-    const updatedTable = await Table.findById(tableId)
-      .populate({
-        path: 'queue',
-        select: 'displayName -_id'
-      })
-      .lean();
+    // Manually populate for the response and socket update
+    const populatedQueue = await populateQueueWithUserDetails(table.queue);
 
     const io = getSocketIO();
     io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: updatedTable._id,
-      newQueue: updatedTable.queue,
-      status: updatedTable.status
+      tableId: table._id,
+      newQueue: populatedQueue, // Send the manually populated queue
+      status: table.status
     });
-    console.log(`User ${userId} joined queue for table ${tableId}. Current queue: ${updatedTable.queue.length}`);
+    console.log(`User ${userId} joined queue for table ${tableId}. Current queue: ${populatedQueue.length}`);
 
-    res.status(200).json({ message: 'Successfully joined queue.', queue: updatedTable.queue });
+    res.status(200).json({ message: 'Successfully joined queue.', queue: populatedQueue });
   } catch (error) {
     console.error('Error joining queue:', error.message);
     res.status(500).json({ message: 'Failed to join queue. Please try again later.' });
@@ -218,7 +234,7 @@ router.post('/:tableId/leave-queue', async (req, res) => {
     }
 
     const initialQueueLength = table.queue.length;
-    table.queue = table.queue.filter(id => id.toString() !== userId);
+    table.queue = table.queue.filter(id => id !== userId); // Filter by string UID
 
     if (table.queue.length === initialQueueLength) {
       return res.status(404).json({ message: 'You are not in this table\'s queue.' });
@@ -226,23 +242,19 @@ router.post('/:tableId/leave-queue', async (req, res) => {
 
     await table.save();
 
-    const updatedTable = await Table.findById(tableId)
-      .populate({
-        path: 'queue',
-        select: 'displayName -_id'
-      })
-      .lean();
+    // Manually populate for the response and socket update
+    const populatedQueue = await populateQueueWithUserDetails(table.queue);
 
     const io = getSocketIO();
     io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: updatedTable._id,
-      newQueue: updatedTable.queue,
-      status: updatedTable.status
+      tableId: table._id,
+      newQueue: populatedQueue, // Send the manually populated queue
+      status: table.status
     });
-    console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${updatedTable.queue.length}`);
+    console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${populatedQueue.length}`);
 
 
-    res.status(200).json({ message: 'Successfully left queue.', queue: updatedTable.queue });
+    res.status(200).json({ message: 'Successfully left queue.', queue: populatedQueue });
   } catch (error) {
     console.error('Error leaving queue:', error.message);
     res.status(500).json({ message: 'Failed to leave queue. Please try again later.' });
@@ -256,7 +268,7 @@ router.post('/:tableId/leave-queue', async (req, res) => {
  * @param tableId - ID of the table to clear the queue for
  */
 router.post('/:tableId/clear-queue', async (req, res) => {
-  if (!req.user || req.user.isAdmin !== true) { // Ensure admin access
+  if (!req.user || req.user.isAdmin !== true) {
     return res.status(403).json({ message: 'Forbidden: Admin access required.' });
   }
 
@@ -273,27 +285,21 @@ router.post('/:tableId/clear-queue', async (req, res) => {
       return res.status(200).json({ message: 'Queue is already empty.' });
     }
 
-    table.queue = []; // Clear the queue
+    table.queue = [];
     await table.save();
 
-    // After saving, fetch the table again with population to get the latest (empty) queue
-    const updatedTable = await Table.findById(tableId)
-      .populate({
-        path: 'queue',
-        select: 'displayName -_id'
-      })
-      .lean();
+    // Queue is empty, so populatedQueue will be empty too
+    const populatedQueue = [];
 
-    // Emit real-time update to all clients watching this venue
     const io = getSocketIO();
     io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: updatedTable._id,
-      newQueue: updatedTable.queue, // Send the empty queue
-      status: updatedTable.status
+      tableId: table._id,
+      newQueue: populatedQueue, // Send the empty queue
+      status: table.status
     });
     console.log(`Admin ${req.user.uid} cleared queue for table ${tableId}.`);
 
-    res.status(200).json({ message: 'Queue cleared successfully.', queue: updatedTable.queue });
+    res.status(200).json({ message: 'Queue cleared successfully.', queue: populatedQueue });
   } catch (error) {
     console.error('Error clearing queue:', error.message);
     res.status(500).json({ message: 'Failed to clear queue. Please try again later.' });
