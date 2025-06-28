@@ -2,7 +2,7 @@
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
-  _id: String, // Firebase UID will be used as primary key
+  _id: { type:String }, // Firebase UID will be used as primary key
   displayName: String,
   email: String,
   tokenBalance: { type: Number, default: 0 },
