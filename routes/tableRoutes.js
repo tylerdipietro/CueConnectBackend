@@ -15,18 +15,17 @@ const populateQueueWithUserDetails = async (queueIds) => {
   if (queueIds.length === 0) {
     return [];
   }
-  // Find users whose _id (Firebase UID) is in the queueIds array
-  // Select 'displayName' and ensure '_id' is also returned (it is by default unless explicitly excluded)
+
   const users = await User.find({ _id: { $in: queueIds } }).select('displayName').lean();
 
-  // Map back to maintain the original order of the queueIds and include _id
-  // This is crucial for correctly identifying 'currentUser' and their position.
   const populatedQueue = queueIds.map(uid => {
-    const user = users.find(u => u._id === uid);
+    const user = users.find(u => u._id.toString() === uid.toString());
     return { _id: uid, displayName: user ? user.displayName : 'Unnamed User' };
   });
+
   return populatedQueue;
 };
+
 
 /**
  * @route POST /api/tables
