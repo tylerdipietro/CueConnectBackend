@@ -2,26 +2,19 @@
 const mongoose = require('mongoose');
 
 const tableSchema = new mongoose.Schema({
-  venueId: { type: mongoose.Schema.Types.ObjectId, ref: 'Venue' },
-  tableNumber: String,
-  esp32DeviceId: String, // Unique ID for the ESP32 connected to this table
-  status: { type: String, enum: ['available', 'in_play', 'in_queue', 'out_of_order'], default: 'available' },
-  currentPlayers: {        // For the active game
-    player1Id: { type: String, ref: 'User', default: null }, // Current player / winner (Firebase UID)
-    player2Id: { type: String, ref: 'User', default: null }  // Challenger (Firebase UID)
-  },
-  currentSessionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Session', default: null }, // Reference to active session
-  queue: [                 // Ordered list of users waiting for this table
-    {
-      userId: { type: String, ref: 'User' },
-      joinedAt: { type: Date, default: Date.now },
-      status: { type: String, enum: ['waiting', 'invited', 'playing', 'declined'], default: 'waiting' }
-    }
-  ],
-  lastGameEndedAt: { type: Date, default: null }, // Timestamp of last game completion
+  venueId: { type: mongoose.Schema.Types.ObjectId, ref: 'Venue', required: true },
+  tableNumber: { type: mongoose.Schema.Types.Mixed, required: true }, // Can be number or string (e.g., "A1")
+  esp32DeviceId: { type: String, unique: true, sparse: true }, // Unique, but allows nulls
+  status: { type: String, enum: ['available', 'occupied', 'queued', 'maintenance'], default: 'available' },
+  currentSessionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Session' },
+  queue: [String], // CHANGED: Array of user UIDs stored as plain strings
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });
+
+// IMPORTANT: Add a compound unique index to ensure tableNumber is unique PER VENUE
+tableSchema.index({ venueId: 1, tableNumber: 1 }, { unique: true });
+
 tableSchema.pre('save', function(next) { this.updatedAt = new Date(); next(); });
 
 module.exports = mongoose.model('Table', tableSchema);
