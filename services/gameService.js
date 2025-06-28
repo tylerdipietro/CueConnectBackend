@@ -7,6 +7,78 @@ const Session = require('../models/Session');
 const { getSocketIO } = require('./socketService'); // To get the Socket.IO instance
 
 /**
+ * Helper function to populate queue with user display names
+ * This function fetches User documents based on the UIDs in the queue
+ * and returns an array of objects containing the user's _id (UID) and displayName.
+ * @param {Array<string>} queueIds - Array of user UIDs (strings) stored in the queue.
+ * @returns {Promise<Array<{_id: string, displayName: string}>>} - A promise that resolves to an array
+ * of objects, each containing the user's _id and displayName. If a user is not found,
+ * their displayName will be 'Unnamed User'.
+ */
+const populateQueueWithUserDetails = async (queueIds) => {
+  if (queueIds.length === 0) {
+    return [];
+  }
+  try {
+    // Find users whose _id (Firebase UID) is in the queueIds array.
+    // Select 'displayName'. Mongoose will include '_id' by default unless explicitly excluded.
+    const users = await User.find({ _id: { $in: queueIds } }).select('displayName').lean();
+
+    // Map the original queueIds array to maintain order and associate with fetched user details.
+    const populatedQueue = queueIds.map(uid => {
+      // Find the user object that matches the current UID
+      const user = users.find(u => u._id === uid);
+      // Return an object with _id and displayName, defaulting to 'Unnamed User' if not found
+      return { _id: uid, displayName: user ? user.displayName : 'Unnamed User' };
+    });
+    return populatedQueue;
+  } catch (error) {
+    console.error('Error in populateQueueWithUserDetails:', error.message);
+    // Return an empty array or re-throw, depending on desired error handling
+    return queueIds.map(uid => ({ _id: uid, displayName: 'Error User' })); // Fallback to avoid breaking frontend
+  }
+};
+
+/**
+ * Helper function to populate display names for players currently on a table.
+ * This function fetches User documents for player1Id and player2Id and adds their display names
+ * to the table object's currentPlayers field.
+ *
+ * @param {Object} table - The table object (Mongoose document or lean object).
+ * @returns {Promise<Object>} - The table object with currentPlayers.player1DisplayName and player2DisplayName added.
+ */
+const populateTablePlayersDetails = async (table) => {
+  // Use a deep copy to ensure we're not modifying the original lean object reference directly
+  const populatedTable = JSON.parse(JSON.stringify(table));
+
+  const playerIdsToFetch = [];
+  if (populatedTable.currentPlayers && populatedTable.currentPlayers.player1Id) {
+    playerIdsToFetch.push(populatedTable.currentPlayers.player1Id);
+  }
+  if (populatedTable.currentPlayers && populatedTable.currentPlayers.player2Id) {
+    playerIdsToFetch.push(populatedTable.currentPlayers.player2Id);
+  }
+
+  if (playerIdsToFetch.length > 0) {
+    const users = await User.find({ _id: { $in: playerIdsToFetch } }).select('displayName').lean();
+
+    if (populatedTable.currentPlayers) {
+      if (populatedTable.currentPlayers.player1Id) {
+        const player1 = users.find(u => u._id === populatedTable.currentPlayers.player1Id);
+        populatedTable.currentPlayers.player1DisplayName = player1 ? player1.displayName : 'Unknown Player';
+      }
+      if (populatedTable.currentPlayers.player2Id) {
+        const player2 = users.find(u => u._id === populatedTable.currentPlayers.player2Id);
+        populatedTable.currentPlayers.player2DisplayName = player2 ? player2.displayName : 'Unknown Player';
+      }
+    }
+  }
+
+  return populatedTable;
+};
+
+
+/**
  * Invites the next player from a table's queue to play.
  * This function handles clearing current players (if applicable), updating table status,
  * and sending push notifications and socket updates.
@@ -46,7 +118,9 @@ const inviteNextPlayer = async (tableId, io, sendPushNotification) => {
         await table.save();
         // Emit general table status update
         const populatedQueue = await populateQueueWithUserDetails(table.queue); // Queue is empty, but consistent structure
-        io.to(table.venueId.toString()).emit('tableStatusUpdate', { ...table.toJSON(), queue: populatedQueue });
+        // Populate current players details for the table status update
+        const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+        io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
       }
       return;
     }
@@ -102,7 +176,9 @@ const inviteNextPlayer = async (tableId, io, sendPushNotification) => {
 
     // Populate queue for the general table status update
     const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    io.to(table.venueId.toString()).emit('tableStatusUpdate', { ...table.toJSON(), queue: populatedQueue });
+    // Populate current players details for the table status update
+    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
   } catch (error) {
     console.error('Error in inviteNextPlayer:', error.message);
@@ -110,41 +186,8 @@ const inviteNextPlayer = async (tableId, io, sendPushNotification) => {
 };
 
 
-/**
- * Helper function to populate queue with user display names
- * This function fetches User documents based on the UIDs in the queue
- * and returns an array of objects containing the user's _id (UID) and displayName.
- * @param {Array<string>} queueIds - Array of user UIDs (strings) stored in the queue.
- * @returns {Promise<Array<{_id: string, displayName: string}>>} - A promise that resolves to an array
- * of objects, each containing the user's _id and displayName. If a user is not found,
- * their displayName will be 'Unnamed User'.
- */
-const populateQueueWithUserDetails = async (queueIds) => {
-  if (queueIds.length === 0) {
-    return [];
-  }
-  try {
-    // Find users whose _id (Firebase UID) is in the queueIds array.
-    // Select 'displayName'. Mongoose will include '_id' by default unless explicitly excluded.
-    const users = await User.find({ _id: { $in: queueIds } }).select('displayName').lean();
-
-    // Map the original queueIds array to maintain order and associate with fetched user details.
-    const populatedQueue = queueIds.map(uid => {
-      // Find the user object that matches the current UID
-      const user = users.find(u => u._id === uid);
-      // Return an object with _id and displayName, defaulting to 'Unnamed User' if not found
-      return { _id: uid, displayName: user ? user.displayName : 'Unnamed User' };
-    });
-    return populatedQueue;
-  } catch (error) {
-    console.error('Error in populateQueueWithUserDetails:', error.message);
-    // Return an empty array or re-throw, depending on desired error handling
-    return queueIds.map(uid => ({ _id: uid, displayName: 'Error User' })); // Fallback to avoid breaking frontend
-  }
-};
-
-
 module.exports = {
   inviteNextPlayer,
-  populateQueueWithUserDetails
+  populateQueueWithUserDetails,
+  populateTablePlayersDetails // Export the new helper
 };
