@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const Table = require('../models/Table');
 const Venue = require('../models/Venue');
-const User = require('../models/User'); // NEW: Import User model
+const User = require('../models/User'); // Import User model
 const { getSocketIO } = require('../services/socketService');
 
 /**
@@ -15,12 +15,14 @@ const populateQueueWithUserDetails = async (queueIds) => {
   if (queueIds.length === 0) {
     return [];
   }
-  // FIX: Removed '-_id' from select. Mongoose includes _id by default,
-  // ensuring 'user._id' is available for matching against 'uid'.
+  // Find users whose _id (Firebase UID) is in the queueIds array
+  // Select 'displayName' and ensure '_id' is also returned (it is by default unless explicitly excluded)
   const users = await User.find({ _id: { $in: queueIds } }).select('displayName').lean();
-  // Map back to maintain order and include _id (Firebase UID)
+
+  // Map back to maintain the original order of the queueIds and include _id
+  // This is crucial for correctly identifying 'currentUser' and their position.
   const populatedQueue = queueIds.map(uid => {
-    const user = users.find(u => u._id === uid); // 'user._id' will now be correctly available
+    const user = users.find(u => u._id === uid);
     return { _id: uid, displayName: user ? user.displayName : 'Unnamed User' };
   });
   return populatedQueue;
