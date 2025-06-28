@@ -104,7 +104,7 @@ router.put('/:tableId', async (req, res) => {
       return res.status(404).json({ message: 'Table not found.' });
     }
 
-    const updateFields: any = {};
+    const updateFields = {}; // Removed ': any'
     let oldTableNumber = table.tableNumber; // Store old table number for comparison if needed
     let oldEsp32DeviceId = table.esp32DeviceId; // Store old device ID
 
