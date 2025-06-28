@@ -2,8 +2,8 @@
 const express = require('express');
 const router = express.Router();
 const Table = require('../models/Table');
-const Venue = require('../models/Venue'); // Need Venue model for context
-const { getSocketIO } = require('../services/socketService'); // Import getSocketIO
+const Venue = require('../models/Venue');
+const { getSocketIO } = require('../services/socketService');
 
 /**
  * @route POST /api/tables
@@ -69,13 +69,12 @@ router.get('/:venueId/tables', async (req, res) => {
   }
 
   try {
-    // IMPORTANT CHANGE: Use .populate() to get user display names for the queue
     const tables = await Table.find({ venueId: req.params.venueId })
       .populate({
         path: 'queue',
-        select: 'displayName -_id' // Select only displayName, exclude _id from populated user objects
+        select: 'displayName -_id'
       })
-      .lean(); // .lean() converts Mongoose documents to plain JavaScript objects for performance
+      .lean();
 
     res.json(tables);
   } catch (error) {
@@ -97,9 +96,8 @@ router.put('/:tableId', async (req, res) => {
   }
 
   const { tableId } = req.params;
-  const { tableNumber, esp32DeviceId } = req.body; // New tableNumber or ESP32 ID
+  const { tableNumber, esp32DeviceId } = req.body;
 
-  // Ensure at least one field is provided for update
   if (tableNumber === undefined && esp32DeviceId === undefined) {
     return res.status(400).json({ message: 'At least one field (tableNumber or esp32DeviceId) must be provided for update.' });
   }
@@ -112,24 +110,20 @@ router.put('/:tableId', async (req, res) => {
     }
 
     const updateFields = {};
-    let oldTableNumber = table.tableNumber; // Store old table number for comparison if needed
-    let oldEsp32DeviceId = table.esp32DeviceId; // Store old device ID
+    let oldTableNumber = table.tableNumber;
+    let oldEsp32DeviceId = table.esp32DeviceId;
 
-    // Update tableNumber if provided and different
     if (tableNumber !== undefined && String(tableNumber) !== String(table.tableNumber)) {
       updateFields.tableNumber = tableNumber;
     }
-    // Update esp32DeviceId if provided and different
     if (esp32DeviceId !== undefined && esp32DeviceId !== table.esp32DeviceId) {
       updateFields.esp32DeviceId = esp32DeviceId;
     }
 
-    // If no fields are actually changing, return early
     if (Object.keys(updateFields).length === 0) {
       return res.status(200).json({ message: 'No changes detected for table.', table });
     }
 
-    // Perform the update
     const updatedTable = await Table.findByIdAndUpdate(
       tableId,
       { $set: updateFields },
@@ -140,7 +134,6 @@ router.put('/:tableId', async (req, res) => {
   } catch (error) {
     console.error('Error updating table:', error);
 
-    // Handle duplicate key errors specifically for tableNumber (within venue) or esp32DeviceId
     if (error.code === 11000) {
       if (error.keyPattern && error.keyPattern.venueId && error.keyPattern.tableNumber) {
         return res.status(409).json({ message: `A table with number "${tableNumber}" already exists in this venue.` });
@@ -174,16 +167,13 @@ router.post('/:tableId/join-queue', async (req, res) => {
       return res.status(404).json({ message: 'Table not found.' });
     }
 
-    // IMPORTANT: Ensure the user is not already in the queue using their string UID
-    if (table.queue.map(id => id.toString()).includes(userId)) { // Convert ObjectId to string for comparison
+    if (table.queue.some(userInQueueId => userInQueueId.toString() === userId)) {
       return res.status(409).json({ message: 'You are already in this table\'s queue.' });
     }
 
-    // Add user's UID (string) to the queue
-    table.queue.push(userId); // Mongoose will convert this string to ObjectId if schema is defined as such
+    table.queue.push(userId);
     await table.save();
 
-    // After saving, fetch the table again with population to get the latest queue with display names
     const updatedTable = await Table.findById(tableId)
       .populate({
         path: 'queue',
@@ -191,11 +181,10 @@ router.post('/:tableId/join-queue', async (req, res) => {
       })
       .lean();
 
-    // Emit real-time update to all clients registered for this venue/table's updates
     const io = getSocketIO();
     io.to(table.venueId.toString()).emit('queueUpdate', {
       tableId: updatedTable._id,
-      newQueue: updatedTable.queue, // Send the populated queue
+      newQueue: updatedTable.queue,
       status: updatedTable.status
     });
     console.log(`User ${userId} joined queue for table ${tableId}. Current queue: ${updatedTable.queue.length}`);
@@ -229,7 +218,6 @@ router.post('/:tableId/leave-queue', async (req, res) => {
     }
 
     const initialQueueLength = table.queue.length;
-    // IMPORTANT: Filter by converting stored ObjectIds to strings for comparison with userId (string)
     table.queue = table.queue.filter(id => id.toString() !== userId);
 
     if (table.queue.length === initialQueueLength) {
@@ -238,7 +226,6 @@ router.post('/:tableId/leave-queue', async (req, res) => {
 
     await table.save();
 
-    // After saving, fetch the table again with population to get the latest queue with display names
     const updatedTable = await Table.findById(tableId)
       .populate({
         path: 'queue',
@@ -246,11 +233,10 @@ router.post('/:tableId/leave-queue', async (req, res) => {
       })
       .lean();
 
-    // Emit real-time update
     const io = getSocketIO();
     io.to(table.venueId.toString()).emit('queueUpdate', {
       tableId: updatedTable._id,
-      newQueue: updatedTable.queue, // Send the populated queue
+      newQueue: updatedTable.queue,
       status: updatedTable.status
     });
     console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${updatedTable.queue.length}`);
@@ -260,6 +246,57 @@ router.post('/:tableId/leave-queue', async (req, res) => {
   } catch (error) {
     console.error('Error leaving queue:', error.message);
     res.status(500).json({ message: 'Failed to leave queue. Please try again later.' });
+  }
+});
+
+/**
+ * @route POST /api/tables/:tableId/clear-queue
+ * @description Allows an admin to clear the queue for a specific table.
+ * @access Private (requires Firebase auth token and admin privileges)
+ * @param tableId - ID of the table to clear the queue for
+ */
+router.post('/:tableId/clear-queue', async (req, res) => {
+  if (!req.user || req.user.isAdmin !== true) { // Ensure admin access
+    return res.status(403).json({ message: 'Forbidden: Admin access required.' });
+  }
+
+  const { tableId } = req.params;
+
+  try {
+    const table = await Table.findById(tableId);
+
+    if (!table) {
+      return res.status(404).json({ message: 'Table not found.' });
+    }
+
+    if (table.queue.length === 0) {
+      return res.status(200).json({ message: 'Queue is already empty.' });
+    }
+
+    table.queue = []; // Clear the queue
+    await table.save();
+
+    // After saving, fetch the table again with population to get the latest (empty) queue
+    const updatedTable = await Table.findById(tableId)
+      .populate({
+        path: 'queue',
+        select: 'displayName -_id'
+      })
+      .lean();
+
+    // Emit real-time update to all clients watching this venue
+    const io = getSocketIO();
+    io.to(table.venueId.toString()).emit('queueUpdate', {
+      tableId: updatedTable._id,
+      newQueue: updatedTable.queue, // Send the empty queue
+      status: updatedTable.status
+    });
+    console.log(`Admin ${req.user.uid} cleared queue for table ${tableId}.`);
+
+    res.status(200).json({ message: 'Queue cleared successfully.', queue: updatedTable.queue });
+  } catch (error) {
+    console.error('Error clearing queue:', error.message);
+    res.status(500).json({ message: 'Failed to clear queue. Please try again later.' });
   }
 });
 
