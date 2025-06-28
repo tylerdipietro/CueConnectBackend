@@ -106,9 +106,6 @@ const verifyFirebaseToken = async (req, res, next) => {
   }
   const idToken = headerToken.split('Bearer ')[1];
 
-  // TEMPORARY LOG: Log the FULL ID token for debugging
-  console.log('--- RECEIVED FULL ID TOKEN ---:', idToken); // Changed to log the full token
-
   try {
     const decodedToken = await admin.auth().verifyIdToken(idToken);
     req.user = decodedToken;
