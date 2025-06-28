@@ -7,7 +7,8 @@ const tableSchema = new mongoose.Schema({
   esp32DeviceId: { type: String, unique: true, sparse: true }, // Unique, but allows nulls
   status: { type: String, enum: ['available', 'occupied', 'queued', 'maintenance'], default: 'available' },
   currentSessionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Session' },
-  queue: [String], // CHANGED: Array of user UIDs stored as plain strings
+  // REVERTED: Now referencing User ObjectId, allows population
+  queue: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Array of User ObjectIds (Firebase UIDs)
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });

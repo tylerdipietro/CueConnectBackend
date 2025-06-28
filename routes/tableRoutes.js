@@ -60,7 +60,7 @@ router.post('/', async (req, res) => {
 
 /**
  * @route GET /api/venues/:venueId/tables
- * @description Retrieves all tables for a specific venue.
+ * @description Retrieves all tables for a specific venue, populating queue user display names.
  * @access Private (requires Firebase auth token)
  */
 router.get('/:venueId/tables', async (req, res) => {
@@ -69,7 +69,14 @@ router.get('/:venueId/tables', async (req, res) => {
   }
 
   try {
-    const tables = await Table.find({ venueId: req.params.venueId }).lean();
+    // IMPORTANT CHANGE: Use .populate() to get user display names for the queue
+    const tables = await Table.find({ venueId: req.params.venueId })
+      .populate({
+        path: 'queue',
+        select: 'displayName -_id' // Select only displayName, exclude _id from populated user objects
+      })
+      .lean(); // .lean() converts Mongoose documents to plain JavaScript objects for performance
+
     res.json(tables);
   } catch (error) {
     console.error('Error fetching tables for venue:', error.message);
@@ -104,7 +111,7 @@ router.put('/:tableId', async (req, res) => {
       return res.status(404).json({ message: 'Table not found.' });
     }
 
-    const updateFields = {}; // Removed ': any'
+    const updateFields = {};
     let oldTableNumber = table.tableNumber; // Store old table number for comparison if needed
     let oldEsp32DeviceId = table.esp32DeviceId; // Store old device ID
 
@@ -126,7 +133,7 @@ router.put('/:tableId', async (req, res) => {
     const updatedTable = await Table.findByIdAndUpdate(
       tableId,
       { $set: updateFields },
-      { new: true, runValidators: true } // `new: true` returns the updated doc, `runValidators` runs schema validators
+      { new: true, runValidators: true }
     );
 
     res.status(200).json(updatedTable);
@@ -167,26 +174,33 @@ router.post('/:tableId/join-queue', async (req, res) => {
       return res.status(404).json({ message: 'Table not found.' });
     }
 
-    if (table.queue.includes(userId)) {
+    // IMPORTANT: Ensure the user is not already in the queue using their string UID
+    if (table.queue.map(id => id.toString()).includes(userId)) { // Convert ObjectId to string for comparison
       return res.status(409).json({ message: 'You are already in this table\'s queue.' });
     }
 
-    // Add user to the end of the queue
-    table.queue.push(userId);
+    // Add user's UID (string) to the queue
+    table.queue.push(userId); // Mongoose will convert this string to ObjectId if schema is defined as such
     await table.save();
+
+    // After saving, fetch the table again with population to get the latest queue with display names
+    const updatedTable = await Table.findById(tableId)
+      .populate({
+        path: 'queue',
+        select: 'displayName -_id'
+      })
+      .lean();
 
     // Emit real-time update to all clients registered for this venue/table's updates
     const io = getSocketIO();
-    // We'll emit to a room specific to the venue, so all users looking at the venue see updates
     io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: table.queue,
-      status: table.status // Also send the current status
+      tableId: updatedTable._id,
+      newQueue: updatedTable.queue, // Send the populated queue
+      status: updatedTable.status
     });
-    console.log(`User ${userId} joined queue for table ${tableId}. Current queue: ${table.queue.length}`);
+    console.log(`User ${userId} joined queue for table ${tableId}. Current queue: ${updatedTable.queue.length}`);
 
-
-    res.status(200).json({ message: 'Successfully joined queue.', queue: table.queue });
+    res.status(200).json({ message: 'Successfully joined queue.', queue: updatedTable.queue });
   } catch (error) {
     console.error('Error joining queue:', error.message);
     res.status(500).json({ message: 'Failed to join queue. Please try again later.' });
@@ -215,7 +229,8 @@ router.post('/:tableId/leave-queue', async (req, res) => {
     }
 
     const initialQueueLength = table.queue.length;
-    table.queue = table.queue.filter(id => id !== userId); // Remove user from queue
+    // IMPORTANT: Filter by converting stored ObjectIds to strings for comparison with userId (string)
+    table.queue = table.queue.filter(id => id.toString() !== userId);
 
     if (table.queue.length === initialQueueLength) {
       return res.status(404).json({ message: 'You are not in this table\'s queue.' });
@@ -223,17 +238,25 @@ router.post('/:tableId/leave-queue', async (req, res) => {
 
     await table.save();
 
+    // After saving, fetch the table again with population to get the latest queue with display names
+    const updatedTable = await Table.findById(tableId)
+      .populate({
+        path: 'queue',
+        select: 'displayName -_id'
+      })
+      .lean();
+
     // Emit real-time update
     const io = getSocketIO();
     io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: table.queue,
-      status: table.status // Also send the current status
+      tableId: updatedTable._id,
+      newQueue: updatedTable.queue, // Send the populated queue
+      status: updatedTable.status
     });
-    console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${table.queue.length}`);
+    console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${updatedTable.queue.length}`);
 
 
-    res.status(200).json({ message: 'Successfully left queue.', queue: table.queue });
+    res.status(200).json({ message: 'Successfully left queue.', queue: updatedTable.queue });
   } catch (error) {
     console.error('Error leaving queue:', error.message);
     res.status(500).json({ message: 'Failed to leave queue. Please try again later.' });
