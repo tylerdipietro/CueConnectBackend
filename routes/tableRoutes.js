@@ -1,4 +1,3 @@
-
 // routes/tableRoutes.js
 const express = require('express');
 const router = express.Router();
@@ -91,7 +90,7 @@ router.get('/:venueId/tables', async (req, res) => {
     res.json(tablesWithAllPopulatedDetails);
   } catch (error) {
     console.error('Error fetching tables for venue:', error.message);
-    res.status(500).send('Failed to fetch tables for the venue.');
+    res.status(500).json({ message: 'Failed to fetch tables for the venue.' }); // Return JSON error
   }
 });
 
@@ -168,18 +167,18 @@ router.post('/:tableId/join-table', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Return JSON error
 
     // Check if table is available and has no players
     if (table.status !== 'available' || table.currentPlayers.player1Id || table.currentPlayers.player2Id) {
-      return res.status(400).send('Table is not available for direct joining. Try joining the queue.');
+      return res.status(400).json({ message: 'Table is not available for direct joining. Try joining the queue.' }); // Return JSON error
     }
 
     const user = await User.findById(userId); // Fetch user to check other tables/queues if needed
-    if (!user) return res.status(404).send('User not found.');
+    if (!user) return res.status(404).json({ message: 'User not found.' }); // Return JSON error
 
     if (table.queue.includes(userId)) {
-      return res.status(400).send('You are already in this table\'s queue.');
+      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); // Return JSON error
     }
 
     table.currentPlayers.player1Id = userId; // User becomes Player 1
@@ -192,7 +191,7 @@ router.post('/:tableId/join-table', async (req, res) => {
     const venue = await Venue.findById(table.venueId);
     if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
       console.error('Venue or perGameCost not configured for table:', tableId);
-      return res.status(500).send('Venue game cost is not configured correctly.');
+      return res.status(500).json({ message: 'Venue game cost is not configured correctly.' }); // Return JSON error
     }
 
     const newSession = new Session({
@@ -223,11 +222,10 @@ router.post('/:tableId/join-table', async (req, res) => {
     const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).send('Joined table successfully.');
-
+    res.status(200).json({ message: 'Joined table successfully.' }); // Return JSON success
   } catch (error) {
     console.error('Error joining table:', error.message);
-    res.status(500).send('Failed to join table.');
+    res.status(500).json({ message: 'Failed to join table.' }); // Return JSON error
   }
 });
 
@@ -243,23 +241,23 @@ router.post('/:tableId/join-queue', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Return JSON error
 
     // Check if table is full (2 players) or if user is already playing/in queue
     const isPlaying = table.currentPlayers.player1Id === userId || table.currentPlayers.player2Id === userId;
     if (isPlaying) {
-      return res.status(400).send('You are already playing at this table.');
+      return res.status(400).json({ message: 'You are already playing at this table.' }); // Return JSON error
     }
     const alreadyInQueue = table.queue.includes(userId); // Since queue stores simple strings
     if (alreadyInQueue) {
-      return res.status(400).send('You are already in this table\'s queue.');
+      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); // Return JSON error
     }
 
     // Only allow joining queue if table is in_play or occupied, or has 1 player, or has a queue
     const numPlayers = (table.currentPlayers.player1Id ? 1 : 0) + (table.currentPlayers.player2Id ? 1 : 0);
     if (numPlayers < 2 && table.queue.length === 0 && table.status === 'available') {
       // If table is available and empty, they should use 'join-table' instead
-      return res.status(400).send('Table is available. Use "join-table" to play immediately.');
+      return res.status(400).json({ message: 'Table is available. Use "join-table" to play immediately.' }); // Return JSON error
     }
     
     table.queue.push(userId); // Add userId string to the queue array
@@ -282,11 +280,10 @@ router.post('/:tableId/join-queue', async (req, res) => {
     // Also send a specific notification to the joining user
     io.to(userId).emit('queueJoined', { tableId: table._id, tableNumber: table.tableNumber });
 
-    res.status(200).send('Joined queue successfully.');
-
+    res.status(200).json({ message: 'Joined queue successfully.' }); // Return JSON success
   } catch (error) {
     console.error('Error joining queue:', error.message);
-    res.status(500).send('Failed to join queue.');
+    res.status(500).json({ message: 'Failed to join queue.' }); // Return JSON error
   }
 });
 
@@ -302,13 +299,13 @@ router.post('/:tableId/leave-queue', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Return JSON error
 
     const initialQueueLength = table.queue.length;
     table.queue = table.queue.filter(id => id !== userId); // Filter by string UID
 
     if (table.queue.length === initialQueueLength) {
-      return res.status(400).send('You are not in this table\'s queue.');
+      return res.status(400).json({ message: 'You are not in this table\'s queue.' }); // Return JSON error
     }
 
     await table.save();
@@ -326,10 +323,10 @@ router.post('/:tableId/leave-queue', async (req, res) => {
     });
     console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${finalTableState.queue.length}`);
 
-    res.status(200).send('Successfully left queue.');
+    res.status(200).json({ message: 'Successfully left queue.' }); // Return JSON success
   } catch (error) {
     console.error('Error leaving queue:', error.message);
-    res.status(500).send('Failed to leave queue.');
+    res.status(500).json({ message: 'Failed to leave queue.' }); // Return JSON error
   }
 });
 
@@ -346,17 +343,17 @@ router.post('/:tableId/claim-win', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Return JSON error
 
     // Ensure the user claiming the win is an active player on this table
     const isPlayer1 = table.currentPlayers.player1Id === winnerId;
     const isPlayer2 = table.currentPlayers.player2Id === winnerId;
 
     if (!isPlayer1 && !isPlayer2) {
-      return res.status(403).send('You are not an active player on this table.');
+      return res.status(403).json({ message: 'You are not an active player on this table.' }); // Return JSON error
     }
     if (!table.currentPlayers.player1Id || !table.currentPlayers.player2Id) {
-      return res.status(400).send('Cannot claim win: Table does not have two active players.');
+      return res.status(400).json({ message: 'Cannot claim win: Table does not have two active players.' }); // Return JSON error
     }
 
     const loserId = isPlayer1 ? table.currentPlayers.player2Id : table.currentPlayers.player1Id;
@@ -364,7 +361,7 @@ router.post('/:tableId/claim-win', async (req, res) => {
 
     if (!loser) {
       console.warn(`Opponent ${loserId} not found for win claim on table ${table.tableNumber}. Proceeding without confirmation.`);
-      return res.status(404).send('Opponent not found.');
+      return res.status(404).json({ message: 'Opponent not found.' }); // Return JSON error
     }
 
     // Set table status to awaiting confirmation
@@ -401,11 +398,11 @@ router.post('/:tableId/claim-win', async (req, res) => {
     const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue }); // Populate players
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).send('Win claim sent for confirmation.');
+    res.status(200).json({ message: 'Win claim sent for confirmation.' }); // Return JSON success
 
   } catch (error) {
     console.error('Error claiming win:', error.message);
-    res.status(500).send('Failed to claim win.');
+    res.status(500).json({ message: 'Failed to claim win.' }); // Return JSON error
   }
 });
 
@@ -423,17 +420,17 @@ router.post('/:tableId/confirm-win', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Return JSON error
 
     // Ensure the confirmer is an active player and is the *opponent* of the winner
     const isPlayer1 = table.currentPlayers.player1Id === winnerId && table.currentPlayers.player2Id === confirmerId;
     const isPlayer2 = table.currentPlayers.player2Id === winnerId && table.currentPlayers.player1Id === confirmerId;
 
     if (!isPlayer1 && !isPlayer2) {
-      return res.status(403).send('You are not the designated opponent for this win confirmation.');
+      return res.status(403).json({ message: 'You are not the designated opponent for this win confirmation.' }); // Return JSON error
     }
     if (table.status !== 'awaiting_confirmation') {
-      return res.status(400).send('Win confirmation is not currently pending for this table.');
+      return res.status(400).json({ message: 'Win confirmation is not currently pending for this table.' }); // Return JSON error
     }
 
     const winner = await User.findById(winnerId); // Get winner's details for notification
@@ -487,11 +484,11 @@ router.post('/:tableId/confirm-win', async (req, res) => {
     const finalTableState = await populateTablePlayersDetails({ ...updatedTableAfterInvite, queue: populatedQueue });
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).send('Win confirmed successfully.');
+    res.status(200).json({ message: 'Win confirmed successfully.' }); // Return JSON success
 
   } catch (error) {
     console.error('Error confirming win:', error.message);
-    res.status(500).send('Failed to confirm win.');
+    res.status(500).json({ message: 'Failed to confirm win.' }); // Return JSON error
   }
 });
 
@@ -509,9 +506,9 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
-    if (table.status === 'in_play') return res.status(400).send('Table is currently in play. Cannot drop balls now.');
-    if (table.status === 'out_of_order') return res.status(400).send('Table is out of order and cannot be used.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Return JSON error
+    if (table.status === 'in_play') return res.status(400).json({ message: 'Table is currently in play. Cannot drop balls now.' }); // Return JSON error
+    if (table.status === 'out_of_order') return res.status(400).json({ message: 'Table is out of order and cannot be used.' }); // Return JSON error
 
     // This endpoint now assumes the user is taking over an available table.
     // If the table is empty and user wants to play alone (or wait for 2nd player)
@@ -523,18 +520,18 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
       table.currentPlayers.player2Id = userId;
       table.status = 'in_play';
     } else {
-      return res.status(400).send('Table is already occupied or you are already playing.');
+      return res.status(400).json({ message: 'Table is already occupied or you are already playing.' }); // Return JSON error
     }
 
     const venue = await Venue.findById(table.venueId);
     if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
-      return res.status(500).send('Game cost not configured for this venue, or is invalid.');
+      return res.status(500).json({ message: 'Game cost not configured for this venue, or is invalid.' }); // Return JSON error
     }
     const cost = venue.perGameCost;
 
     const user = await User.findById(userId);
     if (!user || user.tokenBalance < cost) {
-      return res.status(400).send('Insufficient tokens to drop balls. Please purchase more tokens.');
+      return res.status(400).json({ message: 'Insufficient tokens to drop balls. Please purchase more tokens.' }); // Return JSON error
     }
 
     user.tokenBalance -= cost;
@@ -587,11 +584,10 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
     const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).send('Balls dropped and game started successfully!');
-
+    res.status(200).json({ message: 'Balls dropped and game started successfully!' }); // Return JSON success
   } catch (error) {
     console.error('Error dropping balls now:', error.message);
-    res.status(500).send(error.message || 'Failed to drop balls due to an internal server error.');
+    res.status(500).json({ message: error.message || 'Failed to drop balls due to an internal server error.' }); // Return JSON error
   }
 });
 
@@ -608,8 +604,8 @@ router.post('/:tableId/game-completed', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
-    if (table.status !== 'in_play') return res.status(400).send('Table is not currently in play.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Return JSON error
+    if (table.status !== 'in_play') return res.status(400).json({ message: 'Table is not currently in play.' }); // Return JSON error
 
     const session = await Session.findById(table.currentSessionId);
     if (session) {
@@ -646,11 +642,11 @@ router.post('/:tableId/game-completed', async (req, res) => {
     const finalTableState = await populateTablePlayersDetails({ ...updatedTableAfterInvite, queue: populatedQueue });
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).send('Game completed and table status updated successfully.');
+    res.status(200).json({ message: 'Game completed and table status updated successfully.' }); // Return JSON success
 
   } catch (error) {
     console.error('Error on game completion:', error.message);
-    res.status(500).send('Failed to process game completion due to an internal server error.');
+    res.status(500).json({ message: 'Failed to process game completion due to an internal server error.' }); // Return JSON error
   }
 });
 
@@ -695,7 +691,7 @@ router.post('/:tableId/clear-queue', async (req, res) => {
     });
     console.log(`Admin ${req.user.uid} cleared queue for table ${tableId}.`);
 
-    res.status(200).json({ message: 'Queue cleared successfully.', queue: populatedQueue });
+    res.status(200).json({ message: 'Queue cleared successfully.' }); // Return JSON success
   } catch (error) {
     console.error('Error clearing queue:', error.message);
     res.status(500).json({ message: 'Failed to clear queue. Please try again later.' });

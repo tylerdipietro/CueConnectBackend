@@ -118,7 +118,6 @@ const inviteNextPlayer = async (tableId, io, sendPushNotification) => {
         await table.save();
         // Emit general table status update
         const populatedQueue = await populateQueueWithUserDetails(table.queue); // Queue is empty, but consistent structure
-        // Populate current players details for the table status update
         const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
         io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
       }
