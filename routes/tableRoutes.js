@@ -250,53 +250,70 @@ router.post('/:tableId/join-queue', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Return JSON error
+    if (!table) return res.status(404).json({ message: 'Table not found.' });
 
-    // Check if table is full (2 players) or if user is already playing/in queue
-    const isPlaying = table.currentPlayers.player1Id === userId || table.currentPlayers.player2Id === userId;
+    const isPlaying =
+      table.currentPlayers.player1Id === userId ||
+      table.currentPlayers.player2Id === userId;
     if (isPlaying) {
-      return res.status(400).json({ message: 'You are already playing at this table.' }); // Return JSON error
-    }
-    const alreadyInQueue = table.queue.includes(userId); // Since queue stores simple strings
-    if (alreadyInQueue) {
-      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); // Return JSON error
+      return res.status(400).json({ message: 'You are already playing at this table.' });
     }
 
-    // Only allow joining queue if table is in_play or occupied, or has 1 player, or has a queue
-    const numPlayers = (table.currentPlayers.player1Id ? 1 : 0) + (table.currentPlayers.player2Id ? 1 : 0);
-    if (numPlayers < 2 && table.queue.length === 0 && table.status === 'available') {
-      // If table is available and empty, they should use 'join-table' instead
-      return res.status(400).json({ message: 'Table is available. Use "join-table" to play immediately.' }); // Return JSON error
+    const alreadyInQueue = table.queue.includes(userId);
+    if (alreadyInQueue) {
+      return res.status(400).json({ message: 'You are already in this table\'s queue.' });
     }
-    
-    table.queue.push(userId); // Add userId string to the queue array
+
+    const numPlayers =
+      (table.currentPlayers.player1Id ? 1 : 0) +
+      (table.currentPlayers.player2Id ? 1 : 0);
+
+    if (numPlayers < 2 && table.queue.length === 0 && table.status === 'available') {
+      return res.status(400).json({
+        message: 'Table is available. Use "join-table" to play immediately.',
+      });
+    }
+
+    // ✅ Add user and save
+    table.queue.push(userId);
     await table.save();
 
-    // Manually populate the queue for the Socket.IO update and the response
+    // ✅ Populate queue and player details
     const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
-
-    io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id.toString(),
-      newQueue: populatedQueue, // <-- now includes displayName
-      status: table.status,
-      currentPlayers: table.currentPlayers // optional
+    const finalTableState = await populateTablePlayersDetails({
+      ...table.toJSON(),
+      queue: populatedQueue,
     });
 
-
+    // ✅ Emit full table state
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
-    console.log(`User ${userId} joined queue for table ${tableId}. Current queue length: ${finalTableState.queue.length}`);
 
-    // Also send a specific notification to the joining user
-    io.to(userId).emit('queueJoined', { tableId: table._id, tableNumber: table.tableNumber });
+    // ✅ Emit updated queue with populated players (this was your missing part)
+    io.to(table.venueId.toString()).emit('queueUpdate', {
+      tableId: table._id.toString(),
+      newQueue: finalTableState.queue,
+      status: finalTableState.status,
+      currentPlayers: finalTableState.currentPlayers, // Now includes display names
+    });
 
-    res.status(200).json({ message: 'Joined queue successfully.' }); // Return JSON success
+    // ✅ Notify the joining user directly
+    io.to(userId).emit('queueJoined', {
+      tableId: table._id,
+      tableNumber: table.tableNumber,
+    });
+
+    console.log(
+      `User ${userId} joined queue for table ${tableId}. Current queue length: ${finalTableState.queue.length}`
+    );
+
+    res.status(200).json({ message: 'Joined queue successfully.' });
+
   } catch (error) {
     console.error('Error joining queue:', error.message);
-    res.status(500).json({ message: 'Failed to join queue.' }); // Return JSON error
+    res.status(500).json({ message: 'Failed to join queue.' });
   }
 });
+
 
 /**
  * @route POST /api/tables/:tableId/leave-queue
