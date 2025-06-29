@@ -82,19 +82,18 @@ router.get('/:venueId/tables', async (req, res) => {
     // Get all tables for the venue as lean objects (plain JSON)
     const tables = await Table.find({ venueId: req.params.venueId }).lean();
 
-    // For each table, populate queue with user details and currentPlayers with display names
+    // For each table, populate queue user display names first,
+    // then populate currentPlayers display names using the table object
     const tablesWithAllPopulatedDetails = await Promise.all(
       tables.map(async (table) => {
-        // Populate queue user display names
-        const populatedQueue = await populateQueueWithUserDetails(table.queue);
+        const populatedQueue = await populateQueueWithUserDetails(table.queue || []);
+        // Pass the table with the populated queue to populate player names
+        const tableWithPopulatedPlayers = await populateTablePlayersDetails({ ...table, queue: populatedQueue });
 
-        // Populate currentPlayers display names
-        const tableWithPopulatedPlayers = await populateTablePlayersDetails(table);
-
-        // Return combined table object with populated queue and players
-        return { ...tableWithPopulatedPlayers, queue: populatedQueue };
+        return tableWithPopulatedPlayers;
       })
     );
+
     console.log('Populated tables:', JSON.stringify(tablesWithAllPopulatedDetails, null, 2));
 
     res.json(tablesWithAllPopulatedDetails);
@@ -103,6 +102,7 @@ router.get('/:venueId/tables', async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch tables for the venue.' });
   }
 });
+
 /**
  * @route PUT /api/tables/:tableId
  * @description Allows an admin to update an existing table's details.
