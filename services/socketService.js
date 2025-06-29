@@ -1,6 +1,10 @@
 const Table = require('../models/Table');
 const User = require('../models/User'); // or wherever you store user display names
-const { populateTablePlayersDetails } = require('../services/gameService');
+const {
+  populateTablePlayersDetails,
+  populateQueueWithUserDetails
+} = require('../services/gameService');
+
 
 
 let ioInstance;
