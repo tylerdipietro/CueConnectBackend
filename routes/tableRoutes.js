@@ -268,13 +268,7 @@ router.post('/:tableId/join-queue', async (req, res) => {
     // Populate current players details for the table status update
     const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
 
-    // Emit real-time update to all clients in the venue's room
-    io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: finalTableState.queue, // Send the manually populated queue
-      status: finalTableState.status,
-      currentPlayers: finalTableState.currentPlayers // Include current players
-    });
+    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
     console.log(`User ${userId} joined queue for table ${tableId}. Current queue length: ${finalTableState.queue.length}`);
 
     // Also send a specific notification to the joining user
