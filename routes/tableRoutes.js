@@ -169,43 +169,50 @@ router.post('/:tableId/join-table', async (req, res) => {
   const io = getSocketIO();
 
   try {
-    const table = await Table.findById(tableId);
-    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
+    let table = await Table.findById(tableId); // Use let to reassign
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); 
 
     // Check if table is available and has no players
     if (table.status !== 'available' || table.currentPlayers.player1Id || table.currentPlayers.player2Id) {
-      return res.status(400).json({ message: 'Table is not available for direct joining. Try joining the queue.' }); // Changed to json
+      return res.status(400).json({ message: 'Table is not available for direct joining. Try joining the queue.' }); 
     }
 
-    const user = await User.findById(userId); // Fetch user to check other tables/queues if needed
-    if (!user) return res.status(404).json({ message: 'User not found.' }); // Changed to json
+    const user = await User.findById(userId); 
+    if (!user) return res.status(404).json({ message: 'User not found.' }); 
 
     if (table.queue.includes(userId)) {
-      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); // Changed to json
+      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); 
     }
 
-    table.currentPlayers.player1Id = userId; // User becomes Player 1
-    table.status = 'in_play'; // Table is now in play
-    table.queue = table.queue.filter(uid => uid !== userId); // Ensure they are removed from queue if they were somehow in it
+    table.currentPlayers.player1Id = userId; 
+    table.status = 'in_play'; 
+    table.queue = table.queue.filter(uid => uid !== userId); 
 
     await table.save();
+
+    // Re-fetch the table after saving to get the freshest state, then populate for socket emit
+    const updatedTableDoc = await Table.findById(table._id).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
+    const finalSocketData = { ...populatedTableWithPlayers, queue: populatedQueue };
+
 
     // Create a new session for the game
     const venue = await Venue.findById(table.venueId);
     if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
       console.error('Venue or perGameCost not configured for table:', tableId);
-      return res.status(500).json({ message: 'Venue game cost is not configured correctly.' }); // Changed to json
+      return res.status(500).json({ message: 'Venue game cost is not configured correctly.' }); 
     }
 
     const newSession = new Session({
       tableId: table._id,
       venueId: table.venueId,
       player1Id: userId,
-      player2Id: null, // Initially only one player
+      player2Id: null, 
       startTime: new Date(),
       cost: venue.perGameCost,
-      status: 'active', // Directly active since they joined directly
-      type: 'drop_balls_now', // Can be refined to 'direct_join'
+      status: 'active', 
+      type: 'drop_balls_now', 
     });
     await newSession.save();
     table.currentSessionId = newSession._id;
@@ -219,17 +226,15 @@ router.post('/:tableId/join-table', async (req, res) => {
       playerSlot: 'player1'
     });
 
-    // Manually populate queue (will be empty) for the general table status update
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
-    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
+    // Emit real-time update to all clients in the venue's room
+    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalSocketData); // Use finalSocketData
 
-    res.status(200).json({ message: 'Joined table successfully.' }); // Changed to json
+
+    res.status(200).json({ message: 'Joined table successfully.' }); 
 
   } catch (error) {
     console.error('Error joining table:', error.message);
-    res.status(500).json({ message: 'Failed to join table.' }); // Changed to json
+    res.status(500).json({ message: 'Failed to join table.' }); 
   }
 });
 
@@ -244,51 +249,44 @@ router.post('/:tableId/join-queue', async (req, res) => {
   const io = getSocketIO();
 
   try {
-    const table = await Table.findById(tableId);
-    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
+    let table = await Table.findById(tableId); // Use let to reassign
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); 
 
-    // Check if table is full (2 players) or if user is already playing/in queue
     const isPlaying = table.currentPlayers.player1Id === userId || table.currentPlayers.player2Id === userId;
     if (isPlaying) {
-      return res.status(400).json({ message: 'You are already playing at this table.' }); // Changed to json
+      return res.status(400).json({ message: 'You are already playing at this table.' }); 
     }
-    const alreadyInQueue = table.queue.includes(userId); // Since queue stores simple strings
+    const alreadyInQueue = table.queue.includes(userId); 
     if (alreadyInQueue) {
-      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); // Changed to json
+      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); 
     }
 
-    // Only allow joining queue if table is in_play or occupied, or has 1 player, or has a queue
     const numPlayers = (table.currentPlayers.player1Id ? 1 : 0) + (table.currentPlayers.player2Id ? 1 : 0);
     if (numPlayers < 2 && table.queue.length === 0 && table.status === 'available') {
-      // If table is available and empty, they should use 'join-table' instead
-      return res.status(400).json({ message: 'Table is available. Use "join-table" to play immediately.' }); // Changed to json
+      return res.status(400).json({ message: 'Table is available. Use "join-table" to play immediately.' }); 
     }
     
-    table.queue.push(userId); // Add userId string to the queue array
+    table.queue.push(userId); 
     await table.save();
 
-    // Manually populate the queue for the Socket.IO update and the response
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    // Re-fetch the table after saving to get the freshest state, then populate for socket emit
+    const updatedTableDoc = await Table.findById(table._id).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
+    const finalSocketData = { ...populatedTableWithPlayers, queue: populatedQueue };
 
     // Emit real-time update to all clients in the venue's room
-    io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: finalTableState.queue, // Send the manually populated queue
-      status: finalTableState.status,
-      currentPlayers: finalTableState.currentPlayers // Include current players
-    });
-    console.log(`User ${userId} joined queue for table ${tableId}. Current queue length: ${finalTableState.queue.length}`);
+    io.to(table.venueId.toString()).emit('queueUpdate', finalSocketData); // Use finalSocketData for the socket event
+    console.log(`User ${userId} joined queue for table ${tableId}. Current queue length: ${finalSocketData.queue.length}`);
 
     // Also send a specific notification to the joining user
     io.to(userId).emit('queueJoined', { tableId: table._id, tableNumber: table.tableNumber });
 
-    res.status(200).json({ message: 'Joined queue successfully.' }); // Changed to json
+    res.status(200).json({ message: 'Joined queue successfully.' }); 
 
   } catch (error) {
     console.error('Error joining queue:', error.message);
-    res.status(500).json({ message: 'Failed to join queue.' }); // Changed to json
+    res.status(500).json({ message: 'Failed to join queue.' }); 
   }
 });
 
@@ -303,35 +301,31 @@ router.post('/:tableId/leave-queue', async (req, res) => {
   const io = getSocketIO();
 
   try {
-    const table = await Table.findById(tableId);
-    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
+    let table = await Table.findById(tableId); // Use let to reassign
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); 
 
     const initialQueueLength = table.queue.length;
-    table.queue = table.queue.filter(id => id !== userId); // Filter by string UID
+    table.queue = table.queue.filter(id => id !== userId); 
 
     if (table.queue.length === initialQueueLength) {
-      return res.status(400).json({ message: 'You are not in this table\'s queue.' }); // Changed to json
+      return res.status(400).json({ message: 'You are not in this table\'s queue.' }); 
     }
 
     await table.save();
 
-    // Manually populate for the response and socket update
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    // Re-fetch the table after saving to get the freshest state, then populate for socket emit
+    const updatedTableDoc = await Table.findById(table._id).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
+    const finalSocketData = { ...populatedTableWithPlayers, queue: populatedQueue };
 
-    io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: finalTableState.queue, // Send the manually populated queue
-      status: finalTableState.status,
-      currentPlayers: finalTableState.currentPlayers // Include current players
-    });
-    console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${finalTableState.queue.length}`);
+    io.to(table.venueId.toString()).emit('queueUpdate', finalSocketData); // Use finalSocketData
+    console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${finalSocketData.queue.length}`);
 
-    res.status(200).json({ message: 'Successfully left queue.' }); // Changed to json
+    res.status(200).json({ message: 'Successfully left queue.' }); 
   } catch (error) {
     console.error('Error leaving queue:', error.message);
-    res.status(500).json({ message: 'Failed to leave queue.' }); // Changed to json
+    res.status(500).json({ message: 'Failed to leave queue.' }); 
   }
 });
 
@@ -348,17 +342,16 @@ router.post('/:tableId/claim-win', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); 
 
-    // Ensure the user claiming the win is an active player on this table
     const isPlayer1 = table.currentPlayers.player1Id === winnerId;
     const isPlayer2 = table.currentPlayers.player2Id === winnerId;
 
     if (!isPlayer1 && !isPlayer2) {
-      return res.status(403).json({ message: 'You are not an active player on this table.' }); // Changed to json
+      return res.status(403).json({ message: 'You are not an active player on this table.' }); 
     }
     if (!table.currentPlayers.player1Id || !table.currentPlayers.player2Id) {
-      return res.status(400).json({ message: 'Cannot claim win: Table does not have two active players.' }); // Changed to json
+      return res.status(400).json({ message: 'Cannot claim win: Table does not have two active players.' }); 
     }
 
     const loserId = isPlayer1 ? table.currentPlayers.player2Id : table.currentPlayers.player1Id;
@@ -366,14 +359,12 @@ router.post('/:tableId/claim-win', async (req, res) => {
 
     if (!loser) {
       console.warn(`Opponent ${loserId} not found for win claim on table ${table.tableNumber}. Proceeding without confirmation.`);
-      return res.status(404).json({ message: 'Opponent not found.' }); // Changed to json
+      return res.status(404).json({ message: 'Opponent not found.' }); 
     }
 
-    // Set table status to awaiting confirmation
     table.status = 'awaiting_confirmation';
     await table.save();
 
-    // Send push notification to the loser to confirm/dispute
     if (loser.fcmTokens && loser.fcmTokens.length > 0) {
       await sendPushNotification(
         loser.fcmTokens,
@@ -382,7 +373,6 @@ router.post('/:tableId/claim-win', async (req, res) => {
       );
     }
 
-    // Emit Socket.IO event to the loser
     io.to(loserId).emit('winClaimedNotification', {
       tableId: table._id,
       tableNumber: table.tableNumber,
@@ -391,23 +381,21 @@ router.post('/:tableId/claim-win', async (req, res) => {
       message: `${req.user.displayName || req.user.email} claims victory. Confirm?`
     });
 
-    // Also update the winner's UI to show "Awaiting Opponent Confirmation"
     io.to(winnerId).emit('winClaimSent', {
       tableId: table._id,
       tableNumber: table.tableNumber,
       message: `Waiting for ${loser.displayName || loserId} to confirm win.`
     });
 
-    // Update table status for all viewers
-    const populatedQueue = await populateQueueWithUserDetails(table.queue); // Queue remains unchanged, but status does
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue }); // Populate players
+    const populatedQueue = await populateQueueWithUserDetails(table.queue); 
+    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue }); 
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).json({ message: 'Win claim sent for confirmation.' }); // Changed to json
+    res.status(200).json({ message: 'Win claim sent for confirmation.' }); 
 
   } catch (error) {
     console.error('Error claiming win:', error.message);
-    res.status(500).json({ message: 'Failed to claim win.' }); // Changed to json
+    res.status(500).json({ message: 'Failed to claim win.' }); 
   }
 });
 
@@ -419,30 +407,27 @@ router.post('/:tableId/claim-win', async (req, res) => {
  */
 router.post('/:tableId/confirm-win', async (req, res) => {
   const tableId = req.params.tableId;
-  const confirmerId = req.user.uid; // The user confirming the win (the loser)
-  const { winnerId } = req.body; // The ID of the player who claimed the win
+  const confirmerId = req.user.uid; 
+  const { winnerId } = req.body; 
   const io = getSocketIO();
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); 
 
-    // Ensure the confirmer is an active player and is the *opponent* of the winner
     const isPlayer1 = table.currentPlayers.player1Id === winnerId && table.currentPlayers.player2Id === confirmerId;
     const isPlayer2 = table.currentPlayers.player2Id === winnerId && table.currentPlayers.player1Id === confirmerId;
 
     if (!isPlayer1 && !isPlayer2) {
-      return res.status(403).json({ message: 'You are not the designated opponent for this win confirmation.' }); // Changed to json
+      return res.status(403).json({ message: 'You are not the designated opponent for this win confirmation.' }); 
     }
     if (table.status !== 'awaiting_confirmation') {
-      return res.status(400).json({ message: 'Win confirmation is not currently pending for this table.' }); // Changed to json
+      return res.status(400).json({ message: 'Win confirmation is not currently pending for this table.' }); 
     }
 
-    const winner = await User.findById(winnerId); // Get winner's details for notification
-    const confirmerUser = await User.findById(confirmerId); // Get confirmer's details
+    const winner = await User.findById(winnerId); 
+    const confirmerUser = await User.findById(confirmerId); 
 
-    // Process win:
-    // 1. End current session (if any)
     if (table.currentSessionId) {
       const session = await Session.findById(table.currentSessionId);
       if (session) {
@@ -452,18 +437,15 @@ router.post('/:tableId/confirm-win', async (req, res) => {
       }
     }
 
-    // 2. Clear current players, potentially apply winner-stays logic
     table.lastGameEndedAt = new Date();
     table.currentSessionId = null;
 
-    // Winner-stays logic: Winner becomes player1, other slot is null.
     table.currentPlayers.player1Id = winnerId;
-    table.currentPlayers.player2Id = null;
-    table.status = 'available'; // Table is now available for next opponent
+    table.currentPlayers.player2Id = null; 
+    table.status = 'available'; 
 
     await table.save();
 
-    // 3. Notify Winner
     if (winner && winner.fcmTokens && winner.fcmTokens.length > 0) {
       await sendPushNotification(
         winner.fcmTokens,
@@ -473,27 +455,23 @@ router.post('/:tableId/confirm-win', async (req, res) => {
     }
     io.to(winnerId).emit('winConfirmed', { tableId: table._id, tableNumber: table.tableNumber, message: 'Your win has been confirmed!' });
 
-    // 4. Notify Confirmer (Loser)
     io.to(confirmerId).emit('gameEnded', { tableId: table._id, tableNumber: table.tableNumber, message: 'Game ended. Your opponent claimed victory.' });
 
-
-    // 5. Invite the next player from the queue (if any, and a slot is now open)
-    // This will handle sending notifications and updating table status for next player
-    await inviteNextPlayer(tableId, io, sendPushNotification);
+    await inviteNextPlayer(table._id, io, sendPushNotification); // Pass table._id directly
 
 
-    // Fetch the updated table and populate queue for sending consistent state to all viewers
-    const updatedTableAfterInvite = await Table.findById(tableId).lean();
-    const populatedQueue = await populateQueueWithUserDetails(updatedTableAfterInvite.queue);
-    // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...updatedTableAfterInvite, queue: populatedQueue });
+    // Re-fetch the table after inviteNextPlayer to get the freshest state, then populate for socket emit
+    const updatedTableDoc = await Table.findById(tableId).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
+    const finalTableState = { ...populatedTableWithPlayers, queue: populatedQueue };
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).json({ message: 'Win confirmed successfully.' }); // Changed to json
+    res.status(200).json({ message: 'Win confirmed successfully.' }); 
 
   } catch (error) {
     console.error('Error confirming win:', error.message);
-    res.status(500).json({ message: 'Failed to confirm win.' }); // Changed to json
+    res.status(500).json({ message: 'Failed to confirm win.' }); 
   }
 });
 
@@ -506,46 +484,42 @@ router.post('/:tableId/confirm-win', async (req, res) => {
  */
 router.post('/:tableId/drop-balls-now', async (req, res) => {
   const tableId = req.params.tableId;
-  const userId = req.user.uid; // User initiating drop balls
+  const userId = req.user.uid; 
   const io = getSocketIO();
 
   try {
-    const table = await Table.findById(tableId);
-    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
-    if (table.status === 'in_play') return res.status(400).json({ message: 'Table is currently in play. Cannot drop balls now.' }); // Changed to json
-    if (table.status === 'out_of_order') return res.status(400).json({ message: 'Table is out of order and cannot be used.' }); // Changed to json
+    let table = await Table.findById(tableId); // Use let to reassign
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); 
+    if (table.status === 'in_play') return res.status(400).json({ message: 'Table is currently in play. Cannot drop balls now.' }); 
+    if (table.status === 'out_of_order') return res.status(400).json({ message: 'Table is out of order and cannot be used.' }); 
 
-    // This endpoint now assumes the user is taking over an available table.
-    // If the table is empty and user wants to play alone (or wait for 2nd player)
     if (!table.currentPlayers.player1Id && !table.currentPlayers.player2Id) {
       table.currentPlayers.player1Id = userId;
       table.status = 'in_play';
     } else if (table.currentPlayers.player1Id && !table.currentPlayers.player2Id && table.currentPlayers.player1Id !== userId) {
-      // If P1 exists and this is a different user, they become P2
       table.currentPlayers.player2Id = userId;
       table.status = 'in_play';
     } else {
-      return res.status(400).json({ message: 'Table is already occupied or you are already playing.' }); // Changed to json
+      return res.status(400).json({ message: 'Table is already occupied or you are already playing.' }); 
     }
 
     const venue = await Venue.findById(table.venueId);
     if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
       console.error('Game cost not configured for this venue, or is invalid.');
-      return res.status(500).json({ message: 'Game cost not configured for this venue, or is invalid.' }); // Changed to json
+      return res.status(500).json({ message: 'Game cost not configured for this venue, or is invalid.' }); 
     }
     const cost = venue.perGameCost;
 
     const user = await User.findById(userId);
     if (!user || user.tokenBalance < cost) {
-      return res.status(400).json({ message: 'Insufficient tokens to drop balls. Please purchase more tokens.' }); // Changed to json
+      return res.status(400).json({ message: 'Insufficient tokens to drop balls. Please purchase more tokens.' }); 
     }
 
     user.tokenBalance -= cost;
     await user.save();
 
-    // Clear the existing queue as a direct play takes precedence
     if (table.queue.length > 0) {
-      table.queue.forEach(qId => { // qId is just the UID string here
+      table.queue.forEach(qId => { 
         io.to(qId).emit('queueUpdate', {
           tableId: table._id,
           tableNumber: table.tableNumber,
@@ -559,13 +533,13 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
           `Table ${table.tableNumber} is now being used by a direct play. Your queue position has been removed.`
         );
       });
-      table.queue = []; // Clear the queue
+      table.queue = []; 
     }
 
     const newSession = new Session({
       tableId: table._id,
       venueId: table.venueId,
-      player1Id: table.currentPlayers.player1Id, // Set to current players on table
+      player1Id: table.currentPlayers.player1Id, 
       player2Id: table.currentPlayers.player2Id,
       startTime: new Date(),
       cost: cost,
@@ -585,16 +559,18 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
     io.to(userId).emit('tokenBalanceUpdate', { newBalance: user.tokenBalance });
     sendPushNotification(userId, 'Game Started!', `Balls dropped on Table ${table.tableNumber}! Enjoy your game.`);
 
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    // Re-fetch the table after saving to get the freshest state, then populate for socket emit
+    const updatedTableDoc = await Table.findById(tableId).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
+    const finalTableState = { ...populatedTableWithPlayers, queue: populatedQueue };
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).json({ message: 'Balls dropped and game started successfully!' }); // Changed to json
+    res.status(200).json({ message: 'Balls dropped and game started successfully!' }); 
 
   } catch (error) {
     console.error('Error dropping balls now:', error.message);
-    res.status(500).json({ message: error.message || 'Failed to drop balls due to an internal server error.' }); // Changed to json
+    res.status(500).json({ message: error.message || 'Failed to drop balls due to an internal server error.' }); 
   }
 });
 
@@ -606,13 +582,13 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
  */
 router.post('/:tableId/game-completed', async (req, res) => {
   const tableId = req.params.tableId;
-  const { winnerId } = req.body; // winnerId is optional, used for winner-stays logic
+  const { winnerId } = req.body; 
   const io = getSocketIO();
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
-    if (table.status !== 'in_play') return res.status(400).json({ message: 'Table is not currently in play.' }); // Changed to json
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); 
+    if (table.status !== 'in_play') return res.status(400).json({ message: 'Table is not currently in play.' }); 
 
     const session = await Session.findById(table.currentSessionId);
     if (session) {
@@ -624,36 +600,33 @@ router.post('/:tableId/game-completed', async (req, res) => {
     table.lastGameEndedAt = new Date();
     table.currentSessionId = null;
 
-    // Apply winner-stays logic if a winnerId is provided and valid
     if (winnerId && (table.currentPlayers.player1Id === winnerId || table.currentPlayers.player2Id === winnerId)) {
-        table.currentPlayers.player1Id = winnerId; // Winner stays as Player 1
-        table.currentPlayers.player2Id = null; // Clear second player slot
+        table.currentPlayers.player1Id = winnerId; 
+        table.currentPlayers.player2Id = null; 
         io.to(winnerId).emit('gameEndedSuccess', { tableId: table._id, tableNumber: table.tableNumber, message: 'You won! Ready for next challenge.' });
     } else {
-        // If not 'per_game' or no winner, clear both player slots
         table.currentPlayers.player1Id = null;
         table.currentPlayers.player2Id = null;
     }
     
-    table.status = 'available'; // Set table status back to available (or queued if queue exists)
+    table.status = 'available'; 
 
     await table.save();
 
-    // After game completion, always try to invite the next player to fill any open slots
-    await inviteNextPlayer(tableId, io, sendPushNotification);
+    await inviteNextPlayer(table._id, io, sendPushNotification); // Pass table._id directly
 
-    // Fetch the updated table and populate queue for sending consistent state to all viewers
-    const updatedTableAfterInvite = await Table.findById(tableId).lean();
-    const populatedQueue = await populateQueueWithUserDetails(updatedTableAfterInvite.queue);
-    // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...updatedTableAfterInvite, queue: populatedQueue });
+    // Re-fetch the table after inviteNextPlayer to get the freshest state, then populate for socket emit
+    const updatedTableDoc = await Table.findById(tableId).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
+    const finalTableState = { ...populatedTableWithPlayers, queue: populatedQueue };
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).json({ message: 'Game completed and table status updated successfully.' }); // Changed to json
+    res.status(200).json({ message: 'Game completed and table status updated successfully.' }); 
 
   } catch (error) {
     console.error('Error on game completion:', error.message);
-    res.status(500).json({ message: 'Failed to process game completion due to an internal server error.' }); // Changed to json
+    res.status(500).json({ message: 'Failed to process game completion due to an internal server error.' }); 
   }
 });
 
@@ -681,24 +654,20 @@ router.post('/:tableId/clear-queue', async (req, res) => {
       return res.status(200).json({ message: 'Queue is already empty.' });
     }
 
-    table.queue = []; // Clear the queue by setting it to an empty array
+    table.queue = []; 
     await table.save();
 
-    // Manually populate the queue (which is now empty) for the Socket.IO update
-    const populatedQueue = []; // An empty array is the correct populated queue here
+    // Re-fetch the table after saving to get the freshest state, then populate for socket emit
+    const updatedTableDoc = await Table.findById(tableId).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
+    const finalTableState = { ...populatedTableWithPlayers, queue: populatedQueue };
 
     const io = getSocketIO();
-    // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
-    io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: finalTableState.queue, // Send the empty queue
-      status: finalTableState.status,
-      currentPlayers: finalTableState.currentPlayers // Include current players
-    });
+    io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Use finalTableState
     console.log(`Admin ${req.user.uid} cleared queue for table ${tableId}.`);
 
-    res.status(200).json({ message: 'Queue cleared successfully.' }); // Return JSON success
+    res.status(200).json({ message: 'Queue cleared successfully.' }); // Removed 'queue: populatedQueue' to keep response consistent
   } catch (error) {
     console.error('Error clearing queue:', error.message);
     res.status(500).json({ message: 'Failed to clear queue. Please try again later.' });
