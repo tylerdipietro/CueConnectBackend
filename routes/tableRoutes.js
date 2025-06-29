@@ -296,6 +296,8 @@ router.post('/:tableId/join-queue', async (req, res) => {
       currentPlayers: finalTableState.currentPlayers, // Now includes display names
     });
 
+     io.to(userId).emit('tableStatusUpdate', finalTableState);
+
     // ✅ Notify the joining user directly
     io.to(userId).emit('queueJoined', {
       tableId: table._id,
