@@ -347,7 +347,7 @@ router.post('/:tableId/leave-queue', async (req, res) => {
 
     io.to(table.venueId.toString()).emit('queueUpdate', {
       tableId: table._id,
-      newQueue: finalTableState.queue, // Send the manually populated queue
+      newQueue: populatedQueue, // Send the manually populated queue
       status: finalTableState.status,
       currentPlayers: finalTableState.currentPlayers // Include current players
     });
