@@ -276,7 +276,7 @@ router.post('/:tableId/join-queue', async (req, res) => {
     const finalSocketData = { ...populatedTableWithPlayers, queue: populatedQueue };
 
     // Emit real-time update to all clients in the venue's room
-    io.to(table.venueId.toString()).emit('queueUpdate', finalSocketData); // Use finalSocketData for the socket event
+    io.to(table.venueId.toString()).emit('queueUpdate', finalSocketData); // Emit the full, populated object
     console.log(`User ${userId} joined queue for table ${tableId}. Current queue length: ${finalSocketData.queue.length}`);
 
     // Also send a specific notification to the joining user
@@ -319,7 +319,7 @@ router.post('/:tableId/leave-queue', async (req, res) => {
     const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
     const finalSocketData = { ...populatedTableWithPlayers, queue: populatedQueue };
 
-    io.to(table.venueId.toString()).emit('queueUpdate', finalSocketData); // Use finalSocketData
+    io.to(table.venueId.toString()).emit('queueUpdate', finalSocketData); // Emit the full, populated object
     console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${finalSocketData.queue.length}`);
 
     res.status(200).json({ message: 'Successfully left queue.' }); 
@@ -488,7 +488,7 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
   const io = getSocketIO();
 
   try {
-    let table = await Table.findById(tableId); // Use let to reassign
+    const table = await Table.findById(tableId);
     if (!table) return res.status(404).json({ message: 'Table not found.' }); 
     if (table.status === 'in_play') return res.status(400).json({ message: 'Table is currently in play. Cannot drop balls now.' }); 
     if (table.status === 'out_of_order') return res.status(400).json({ message: 'Table is out of order and cannot be used.' }); 
@@ -559,11 +559,9 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
     io.to(userId).emit('tokenBalanceUpdate', { newBalance: user.tokenBalance });
     sendPushNotification(userId, 'Game Started!', `Balls dropped on Table ${table.tableNumber}! Enjoy your game.`);
 
-    // Re-fetch the table after saving to get the freshest state, then populate for socket emit
-    const updatedTableDoc = await Table.findById(tableId).lean();
-    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
-    const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
-    const finalTableState = { ...populatedTableWithPlayers, queue: populatedQueue };
+    const populatedQueue = await populateQueueWithUserDetails(table.queue);
+    // Populate current players details for the table status update
+    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
     res.status(200).json({ message: 'Balls dropped and game started successfully!' }); 
@@ -613,7 +611,7 @@ router.post('/:tableId/game-completed', async (req, res) => {
 
     await table.save();
 
-    await inviteNextPlayer(table._id, io, sendPushNotification); // Pass table._id directly
+    await inviteNextPlayer(tableId, io, sendPushNotification);
 
     // Re-fetch the table after inviteNextPlayer to get the freshest state, then populate for socket emit
     const updatedTableDoc = await Table.findById(tableId).lean();
@@ -664,10 +662,10 @@ router.post('/:tableId/clear-queue', async (req, res) => {
     const finalTableState = { ...populatedTableWithPlayers, queue: populatedQueue };
 
     const io = getSocketIO();
-    io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Use finalTableState
+    io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); 
     console.log(`Admin ${req.user.uid} cleared queue for table ${tableId}.`);
 
-    res.status(200).json({ message: 'Queue cleared successfully.' }); // Removed 'queue: populatedQueue' to keep response consistent
+    res.status(200).json({ message: 'Queue cleared successfully.' }); 
   } catch (error) {
     console.error('Error clearing queue:', error.message);
     res.status(500).json({ message: 'Failed to clear queue. Please try again later.' });
