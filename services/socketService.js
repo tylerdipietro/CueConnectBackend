@@ -1,20 +1,11 @@
 const Table = require('../models/Table');
 const User = require('../models/User'); // or wherever you store user display names
+const { populateTablePlayersDetails } = require('../services/gameService');
+
 
 let ioInstance;
 
-// Helper: populate queue user details for display
-const populateQueueWithUserDetails = async (queueIds) => {
-  if (!queueIds || queueIds.length === 0) return [];
-  const users = await User.find({ _id: { $in: queueIds } }).select('displayName').lean();
-  return queueIds.map(uid => {
-    const matchedUser = users.find(u => u._id.toString() === uid.toString());
-    return {
-      _id: uid,
-      displayName: matchedUser?.displayName || 'Unnamed User',
-    };
-  });
-};
+
 
 const initializeSocketIO = (httpServer, corsOptions) => {
   ioInstance = require('socket.io')(httpServer, { cors: corsOptions });
@@ -32,16 +23,12 @@ const initializeSocketIO = (httpServer, corsOptions) => {
       console.log(`Socket ${socket.id} joined venue room: ${venueId}`);
 
       try {
-        const tables = await Table.find({ venueId }).lean();
-
-        // For each table, populate the queue user details
         const populatedTables = await Promise.all(
           tables.map(async (table) => {
             const populatedQueue = await populateQueueWithUserDetails(table.queue);
-            return {
-              ...table,
-              queue: populatedQueue,
-            };
+            const tableWithQueue = { ...table, queue: populatedQueue };
+            const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
+            return fullyPopulatedTable;
           })
         );
 
