@@ -95,6 +95,7 @@ router.get('/:venueId/tables', async (req, res) => {
         return { ...tableWithPopulatedPlayers, queue: populatedQueue };
       })
     );
+    console.log('Populated tables:', JSON.stringify(tablesWithAllPopulatedDetails, null, 2));
 
     res.json(tablesWithAllPopulatedDetails);
   } catch (error) {

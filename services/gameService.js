@@ -15,28 +15,15 @@ const { getSocketIO } = require('./socketService'); // To get the Socket.IO inst
  * of objects, each containing the user's _id and displayName. If a user is not found,
  * their displayName will be 'Unnamed User'.
  */
-const populateQueueWithUserDetails = async (queueIds) => {
-  if (queueIds.length === 0) {
-    return [];
-  }
-  try {
-    // Find users whose _id (Firebase UID) is in the queueIds array.
-    // Select 'displayName'. Mongoose will include '_id' by default unless explicitly excluded.
-    const users = await User.find({ _id: { $in: queueIds } }).select('displayName').lean();
+const populateQueueWithUserDetails = async (queue) => {
+  if (!queue || queue.length === 0) return [];
 
-    // Map the original queueIds array to maintain order and associate with fetched user details.
-    const populatedQueue = queueIds.map(uid => {
-      // Find the user object that matches the current UID
-      const user = users.find(u => u._id === uid);
-      // Return an object with _id and displayName, defaulting to 'Unnamed User' if not found
-      return { _id: uid, displayName: user ? user.displayName : 'Unnamed User' };
-    });
-    return populatedQueue;
-  } catch (error) {
-    console.error('Error in populateQueueWithUserDetails:', error.message);
-    // Return an empty array or re-throw, depending on desired error handling
-    return queueIds.map(uid => ({ _id: uid, displayName: 'Error User' })); // Fallback to avoid breaking frontend
-  }
+  const users = await User.find({ _id: { $in: queue } }).select('_id displayName').lean();
+
+  // Preserve original queue order
+  const userMap = new Map(users.map(u => [u._id.toString(), u]));
+
+  return queue.map(userId => userMap.get(userId.toString()) || { _id: userId, displayName: 'Unknown User' });
 };
 
 /**
@@ -48,34 +35,23 @@ const populateQueueWithUserDetails = async (queueIds) => {
  * @returns {Promise<Object>} - The table object with currentPlayers.player1DisplayName and player2DisplayName added.
  */
 const populateTablePlayersDetails = async (table) => {
-  // Use a deep copy to ensure we're not modifying the original lean object reference directly
-  const populatedTable = JSON.parse(JSON.stringify(table));
+  const updatedTable = { ...table };
 
-  const playerIdsToFetch = [];
-  if (populatedTable.currentPlayers && populatedTable.currentPlayers.player1Id) {
-    playerIdsToFetch.push(populatedTable.currentPlayers.player1Id);
-  }
-  if (populatedTable.currentPlayers && populatedTable.currentPlayers.player2Id) {
-    playerIdsToFetch.push(populatedTable.currentPlayers.player2Id);
-  }
+  const playerIds = [table.currentPlayers?.player1Id, table.currentPlayers?.player2Id].filter(Boolean);
 
-  if (playerIdsToFetch.length > 0) {
-    const users = await User.find({ _id: { $in: playerIdsToFetch } }).select('displayName').lean();
+  const users = await User.find({ _id: { $in: playerIds } }).select('_id displayName').lean();
 
-    if (populatedTable.currentPlayers) {
-      if (populatedTable.currentPlayers.player1Id) {
-        const player1 = users.find(u => u._id === populatedTable.currentPlayers.player1Id);
-        populatedTable.currentPlayers.player1DisplayName = player1 ? player1.displayName : 'Unknown Player';
-      }
-      if (populatedTable.currentPlayers.player2Id) {
-        const player2 = users.find(u => u._id === populatedTable.currentPlayers.player2Id);
-        populatedTable.currentPlayers.player2DisplayName = player2 ? player2.displayName : 'Unknown Player';
-      }
-    }
-  }
+  const userMap = new Map(users.map(u => [u._id.toString(), u.displayName]));
 
-  return populatedTable;
+  updatedTable.currentPlayers = {
+    ...table.currentPlayers,
+    player1DisplayName: userMap.get(table.currentPlayers?.player1Id?.toString()) || null,
+    player2DisplayName: userMap.get(table.currentPlayers?.player2Id?.toString()) || null,
+  };
+
+  return updatedTable;
 };
+
 
 
 /**
