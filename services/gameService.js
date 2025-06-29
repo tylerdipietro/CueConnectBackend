@@ -39,18 +39,22 @@ const populateTablePlayersDetails = async (table) => {
 
   const playerIds = [table.currentPlayers?.player1Id, table.currentPlayers?.player2Id].filter(Boolean);
 
+  if (playerIds.length === 0) return updatedTable;
+
   const users = await User.find({ _id: { $in: playerIds } }).select('_id displayName').lean();
 
   const userMap = new Map(users.map(u => [u._id.toString(), u.displayName]));
 
   updatedTable.currentPlayers = {
-    ...table.currentPlayers,
-    player1DisplayName: userMap.get(table.currentPlayers?.player1Id?.toString()) || null,
-    player2DisplayName: userMap.get(table.currentPlayers?.player2Id?.toString()) || null,
+    player1Id: table.currentPlayers?.player1Id || null,
+    player2Id: table.currentPlayers?.player2Id || null,
+    player1DisplayName: table.currentPlayers?.player1Id ? userMap.get(table.currentPlayers.player1Id.toString()) || 'Unknown Player' : 'Empty',
+    player2DisplayName: table.currentPlayers?.player2Id ? userMap.get(table.currentPlayers.player2Id.toString()) || 'Unknown Player' : 'Empty',
   };
 
   return updatedTable;
 };
+
 
 
 
