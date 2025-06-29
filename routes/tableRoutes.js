@@ -79,21 +79,29 @@ router.get('/:venueId/tables', async (req, res) => {
   }
 
   try {
+    // Get all tables for the venue as lean objects (plain JSON)
     const tables = await Table.find({ venueId: req.params.venueId }).lean();
 
-    const tablesWithAllPopulatedDetails = await Promise.all(tables.map(async (table) => {
-      const populatedQueue = await populateQueueWithUserDetails(table.queue);
-      const tableWithPopulatedPlayers = await populateTablePlayersDetails(table); // Populate current players
-      return { ...tableWithPopulatedPlayers, queue: populatedQueue }; // Combine populated data
-    }));
+    // For each table, populate queue with user details and currentPlayers with display names
+    const tablesWithAllPopulatedDetails = await Promise.all(
+      tables.map(async (table) => {
+        // Populate queue user display names
+        const populatedQueue = await populateQueueWithUserDetails(table.queue);
+
+        // Populate currentPlayers display names
+        const tableWithPopulatedPlayers = await populateTablePlayersDetails(table);
+
+        // Return combined table object with populated queue and players
+        return { ...tableWithPopulatedPlayers, queue: populatedQueue };
+      })
+    );
 
     res.json(tablesWithAllPopulatedDetails);
   } catch (error) {
     console.error('Error fetching tables for venue:', error.message);
-    res.status(500).json({ message: 'Failed to fetch tables for the venue.' }); // Return JSON error
+    res.status(500).json({ message: 'Failed to fetch tables for the venue.' });
   }
 });
-
 /**
  * @route PUT /api/tables/:tableId
  * @description Allows an admin to update an existing table's details.
