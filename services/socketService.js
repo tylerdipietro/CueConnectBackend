@@ -19,26 +19,30 @@ const initializeSocketIO = (httpServer, corsOptions) => {
     });
 
     socket.on('joinVenueRoom', async (venueId) => {
-      socket.join(venueId);
-      console.log(`Socket ${socket.id} joined venue room: ${venueId}`);
+  socket.join(venueId);
+  console.log(`Socket ${socket.id} joined venue room: ${venueId}`);
 
-      try {
-        const populatedTables = await Promise.all(
-          tables.map(async (table) => {
-            const populatedQueue = await populateQueueWithUserDetails(table.queue);
-            const tableWithQueue = { ...table, queue: populatedQueue };
-            const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
-            return fullyPopulatedTable;
-          })
-        );
+  try {
+    // ✅ Fetch the tables from the database first
+    const tables = await Table.find({ venueId }).lean();
 
-        // Emit the full current state only to this socket (not the whole room)
-        socket.emit('initialVenueState', populatedTables);
-        console.log(`[Socket.IO] Sent initialVenueState to socket ${socket.id}`);
-      } catch (error) {
-        console.error('Error fetching tables for initialVenueState:', error);
-      }
-    });
+    const populatedTables = await Promise.all(
+      tables.map(async (table) => {
+        const populatedQueue = await populateQueueWithUserDetails(table.queue);
+        const tableWithQueue = { ...table, queue: populatedQueue };
+        const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
+        return fullyPopulatedTable;
+      })
+    );
+
+    // Emit the full current state only to this socket (not the whole room)
+    socket.emit('initialVenueState', populatedTables);
+    console.log(`[Socket.IO] Sent initialVenueState to socket ${socket.id}`);
+  } catch (error) {
+    console.error('Error fetching tables for initialVenueState:', error);
+  }
+});
+
 
     socket.on('leaveVenueRoom', (venueId) => {
       socket.leave(venueId);
