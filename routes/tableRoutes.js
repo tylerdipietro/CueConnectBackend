@@ -1,3 +1,4 @@
+
 // routes/tableRoutes.js
 const express = require('express');
 const router = express.Router();
@@ -315,6 +316,7 @@ router.post('/:tableId/join-table', async (req, res) => {
     const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
     // Populate current players details for the table status update
     const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
+    console.log('[DEBUG-JOIN-TABLE] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
     res.status(200).json({ message: 'Joined table successfully.' });
@@ -364,11 +366,13 @@ router.post('/:tableId/join-queue', async (req, res) => {
     await table.save();
 
     // Manually populate the queue for the Socket.IO update and the response
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
+    const updatedTableDoc = await Table.findById(table._id).lean(); // Re-fetch for freshest state
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
     // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
 
     // Emit real-time update to all clients in the venue's room
+    console.log('[DEBUG-JOIN-QUEUE] Emitting finalTableState for queueUpdate:', JSON.stringify(finalTableState, null, 2));
     io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Emit full table state
     console.log(`User ${userId} joined queue for table ${tableId}. Current queue length: ${finalTableState.queue.length}`);
 
@@ -407,10 +411,12 @@ router.post('/:tableId/leave-queue', async (req, res) => {
     await table.save();
 
     // Manually populate for the response and socket update
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
+    const updatedTableDoc = await Table.findById(table._id).lean(); // Re-fetch for freshest state
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
     // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
 
+    console.log('[DEBUG-LEAVE-QUEUE] Emitting finalTableState for queueUpdate:', JSON.stringify(finalTableState, null, 2));
     io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Emit full table state
     console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${finalTableState.queue.length}`);
 
@@ -485,8 +491,10 @@ router.post('/:tableId/claim-win', async (req, res) => {
     });
 
     // Update table status for all viewers
-    const populatedQueue = await populateQueueWithUserDetails(table.queue); // Queue remains unchanged, but status does
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue }); // Populate players
+    const updatedTableDoc = await Table.findById(tableId).lean(); // Re-fetch for freshest state
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue); // Queue remains unchanged, but status does
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue }); // Populate players
+    console.log('[DEBUG-CLAIM-WIN] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
     res.status(200).json({ message: 'Win claim sent for confirmation.' }); // Changed to json
@@ -573,6 +581,7 @@ router.post('/:tableId/confirm-win', async (req, res) => {
     const populatedQueue = await populateQueueWithUserDetails(updatedTableAfterInvite.queue);
     // Populate current players details for the table status update
     const finalTableState = await populateTablePlayersDetails({ ...updatedTableAfterInvite, queue: populatedQueue });
+    console.log('[DEBUG-CONFIRM-WIN] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
     res.status(200).json({ message: 'Win confirmed successfully.' }); // Changed to json
@@ -649,7 +658,7 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
     }
 
     const newSession = new Session({
-      tableId: table._id, // Corrected from table._2_id
+      tableId: table._id, 
       venueId: table.venueId,
       player1Id: table.currentPlayers.player1Id, // Set to current players on table
       player2Id: table.currentPlayers.player2Id,
@@ -675,6 +684,7 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
     const populatedQueue = await populateQueueWithUserDetails(table.queue);
     // Populate current players details for the table status update
     const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    console.log('[DEBUG-DROP-BALLS] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
     res.status(200).json({ message: 'Balls dropped and game started successfully!' }); // Changed to json
@@ -734,6 +744,7 @@ router.post('/:tableId/game-completed', async (req, res) => {
     const populatedQueue = await populateQueueWithUserDetails(updatedTableAfterInvite.queue);
     // Populate current players details for the table status update
     const finalTableState = await populateTablePlayersDetails({ ...updatedTableAfterInvite, queue: populatedQueue });
+    console.log('[DEBUG-GAME-COMPLETED] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
     res.status(200).json({ message: 'Game completed and table status updated successfully.' }); // Changed to json
@@ -772,11 +783,12 @@ router.post('/:tableId/clear-queue', async (req, res) => {
     await table.save();
 
     // Manually populate the queue (which is now empty) for the Socket.IO update
+    const updatedTableDoc = await Table.findById(tableId).lean(); // Re-fetch for freshest state
     const populatedQueue = []; // An empty array is the correct populated queue here
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
 
     const io = getSocketIO();
-    // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    console.log('[DEBUG-CLEAR-QUEUE] Emitting finalTableState for queueUpdate:', JSON.stringify(finalTableState, null, 2));
     io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Emit full table state
     console.log(`Admin ${req.user.uid} cleared queue for table ${tableId}.`);
 
@@ -864,6 +876,7 @@ router.post('/:tableId/remove-player', async (req, res) => {
     const finalTableState = { ...populatedTableWithPlayers, queue: populatedQueue };
 
     // Emit real-time update to all clients in the venue's room
+    console.log('[DEBUG-REMOVE-PLAYER] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
     console.log(`Admin ${req.user.uid} removed player ${playerIdToRemove} (${removedPlayerDisplayName}) from table ${table.tableNumber}.`);
 

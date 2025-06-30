@@ -16,26 +16,28 @@ const { getSocketIO } = require('./socketService'); // To get the Socket.IO inst
  * their displayName will be 'Unnamed User'.
  */
 const populateQueueWithUserDetails = async (queueIds) => {
+  console.log('[DEBUG-QUEUE] Populating queue for IDs:', queueIds);
   if (queueIds.length === 0) {
+    console.log('[DEBUG-QUEUE] Queue IDs empty, returning empty array.');
     return [];
   }
   try {
     // Find users whose _id (Firebase UID) is in the queueIds array.
     // Select 'displayName'. Mongoose will include '_id' by default unless explicitly excluded.
     const users = await User.find({ _id: { $in: queueIds } }).select('displayName').lean();
+    console.log('[DEBUG-QUEUE] Fetched users for queue:', users.map(u => ({ _id: u._id, displayName: u.displayName })));
 
-    // Map the original queueIds array to maintain order and associate with fetched user details.
     const populatedQueue = queueIds.map(uid => {
-      // Find the user object that matches the current UID
       const user = users.find(u => u._id === uid);
-      // Return an object with _id and displayName, defaulting to 'Unnamed User' if not found
-      return { _id: uid, displayName: user ? user.displayName : 'Unnamed User' };
+      const displayName = user ? user.displayName : 'Unnamed User';
+      console.log(`[DEBUG-QUEUE] Mapped UID ${uid} to displayName: ${displayName}`);
+      return { _id: uid, displayName: displayName };
     });
+    console.log('[DEBUG-QUEUE] Final populated queue:', populatedQueue);
     return populatedQueue;
   } catch (error) {
-    console.error('Error in populateQueueWithUserDetails:', error.message);
-    // Return an empty array or re-throw, depending on desired error handling
-    return queueIds.map(uid => ({ _id: uid, displayName: 'Error User' })); // Fallback to avoid breaking frontend
+    console.error('[DEBUG-QUEUE] Error in populateQueueWithUserDetails:', error.message);
+    return queueIds.map(uid => ({ _id: uid, displayName: 'Error User' }));
   }
 };
 
@@ -48,8 +50,8 @@ const populateQueueWithUserDetails = async (queueIds) => {
  * @returns {Promise<Object>} - The table object with currentPlayers.player1DisplayName and player2DisplayName added.
  */
 const populateTablePlayersDetails = async (table) => {
-  // Use a deep copy to ensure we're not modifying the original lean object reference directly
-  const populatedTable = JSON.parse(JSON.stringify(table));
+  console.log('[DEBUG-PLAYERS] Starting populateTablePlayersDetails for table:', table._id, 'currentPlayers:', table.currentPlayers);
+  const populatedTable = JSON.parse(JSON.stringify(table)); // Deep copy
 
   const playerIdsToFetch = [];
   if (populatedTable.currentPlayers && populatedTable.currentPlayers.player1Id) {
@@ -58,22 +60,26 @@ const populateTablePlayersDetails = async (table) => {
   if (populatedTable.currentPlayers && populatedTable.currentPlayers.player2Id) {
     playerIdsToFetch.push(populatedTable.currentPlayers.player2Id);
   }
+  console.log('[DEBUG-PLAYERS] Player IDs to fetch:', playerIdsToFetch);
 
   if (playerIdsToFetch.length > 0) {
     const users = await User.find({ _id: { $in: playerIdsToFetch } }).select('displayName').lean();
+    console.log('[DEBUG-PLAYERS] Fetched users for players:', users.map(u => ({ _id: u._id, displayName: u.displayName })));
 
     if (populatedTable.currentPlayers) {
       if (populatedTable.currentPlayers.player1Id) {
         const player1 = users.find(u => u._id === populatedTable.currentPlayers.player1Id);
         populatedTable.currentPlayers.player1DisplayName = player1 ? player1.displayName : 'Unknown Player';
+        console.log(`[DEBUG-PLAYERS] Player 1 (${populatedTable.currentPlayers.player1Id}) display name set to: ${populatedTable.currentPlayers.player1DisplayName}`);
       }
       if (populatedTable.currentPlayers.player2Id) {
         const player2 = users.find(u => u._id === populatedTable.currentPlayers.player2Id);
         populatedTable.currentPlayers.player2DisplayName = player2 ? player2.displayName : 'Unknown Player';
+        console.log(`[DEBUG-PLAYERS] Player 2 (${populatedTable.currentPlayers.player2Id}) display name set to: ${populatedTable.currentPlayers.player2DisplayName}`);
       }
     }
   }
-
+  console.log('[DEBUG-PLAYERS] Final populated table players details:', populatedTable.currentPlayers);
   return populatedTable;
 };
 
@@ -120,6 +126,7 @@ const inviteNextPlayer = async (tableId, io, sendPushNotification) => {
         const updatedTableDoc = await Table.findById(tableId).lean(); // Re-fetch to ensure freshest state
         const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue); 
         const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
+        console.log('[DEBUG-INVITE-NEXT] Emitting finalTableState after queue empty and setting available:', JSON.stringify(finalTableState, null, 2));
         io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
       }
       return;
@@ -179,6 +186,7 @@ const inviteNextPlayer = async (tableId, io, sendPushNotification) => {
     const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
     // Populate current players details for the table status update
     const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
+    console.log('[DEBUG-INVITE-NEXT] Emitting finalTableState after player invited:', JSON.stringify(finalTableState, null, 2));
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
   } catch (error) {
