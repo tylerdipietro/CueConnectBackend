@@ -117,8 +117,9 @@ const inviteNextPlayer = async (tableId, io, sendPushNotification) => {
         table.status = 'available';
         await table.save();
         // Emit general table status update
-        const populatedQueue = await populateQueueWithUserDetails(table.queue); // Queue is empty, but consistent structure
-        const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+        const updatedTableDoc = await Table.findById(tableId).lean(); // Re-fetch to ensure freshest state
+        const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue); 
+        const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
         io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
       }
       return;
@@ -173,10 +174,11 @@ const inviteNextPlayer = async (tableId, io, sendPushNotification) => {
       esp32DeviceId: table.esp32DeviceId, // Include ESP32 ID for frontend activation
     });
 
-    // Populate queue for the general table status update
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
+    // Re-fetch the table after saving to get the freshest state, then populate for socket emit
+    const updatedTableDoc = await Table.findById(tableId).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
     // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
   } catch (error) {
