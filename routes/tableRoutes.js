@@ -170,54 +170,50 @@ router.post('/:tableId/join-table', async (req, res) => {
   const io = getSocketIO();
 
   try {
-    let table = await Table.findById(tableId); 
-    if (!table) return res.status(404).json({ message: 'Table not found.' }); 
+    const table = await Table.findById(tableId);
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
 
+    // Check if table is available and has no players
     if (table.status !== 'available' || table.currentPlayers.player1Id || table.currentPlayers.player2Id) {
-      return res.status(400).json({ message: 'Table is not available for direct joining. Try joining the queue.' }); 
+      return res.status(400).json({ message: 'Table is not available for direct joining. Try joining the queue.' }); // Changed to json
     }
 
-    const user = await User.findById(userId); 
-    if (!user) return res.status(404).json({ message: 'User not found.' }); 
+    const user = await User.findById(userId); // Fetch user to check other tables/queues if needed
+    if (!user) return res.status(404).json({ message: 'User not found.' }); // Changed to json
 
     if (table.queue.includes(userId)) {
-      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); 
+      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); // Changed to json
     }
 
-    table.currentPlayers.player1Id = userId; 
-    table.status = 'in_play'; 
-    table.queue = table.queue.filter(uid => uid !== userId); 
+    table.currentPlayers.player1Id = userId; // User becomes Player 1
+    table.status = 'in_play'; // Table is now in play
+    table.queue = table.queue.filter(uid => uid !== userId); // Ensure they are removed from queue if they were somehow in it
 
     await table.save();
-
-    // Re-fetch the table after saving to get the freshest state, then populate for socket emit
-    const updatedTableDoc = await Table.findById(table._id).lean();
-    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
-    const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
-    const finalSocketData = { ...populatedTableWithPlayers, queue: populatedQueue };
-
 
     // Create a new session for the game
     const venue = await Venue.findById(table.venueId);
     if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
       console.error('Venue or perGameCost not configured for table:', tableId);
-      return res.status(500).json({ message: 'Venue game cost is not configured correctly.' }); 
+      return res.status(500).json({ message: 'Venue game cost is not configured correctly.' }); // Changed to json
     }
 
     const newSession = new Session({
       tableId: table._id,
       venueId: table.venueId,
       player1Id: userId,
-      player2Id: null, 
+      player2Id: null, // Initially only one player
       startTime: new Date(),
       cost: venue.perGameCost,
-      status: 'active', 
-      type: 'drop_balls_now', 
+      status: 'active', // Directly active since they joined directly
+      type: 'drop_balls_now', // Can be refined to 'direct_join'
+      // stripePaymentIntentId: null, // Will be null by default, but sparse index allows this
     });
     await newSession.save();
     table.currentSessionId = newSession._id;
     await table.save();
 
+    // Notify the user who just joined that they are now playing
     io.to(userId).emit('tableJoined', {
       tableId: table._id,
       tableNumber: table.tableNumber,
@@ -225,15 +221,17 @@ router.post('/:tableId/join-table', async (req, res) => {
       playerSlot: 'player1'
     });
 
-    // Emit real-time update to all clients in the venue's room
-    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalSocketData); 
+    // Manually populate queue (will be empty) for the general table status update
+    const populatedQueue = await populateQueueWithUserDetails(table.queue);
+    // Populate current players details for the table status update
+    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-
-    res.status(200).json({ message: 'Joined table successfully.' }); 
+    res.status(200).json({ message: 'Joined table successfully.' }); // Changed to json
 
   } catch (error) {
     console.error('Error joining table:', error.message);
-    res.status(500).json({ message: 'Failed to join table.' }); 
+    res.status(500).json({ message: 'Failed to join table.' }); // Changed to json
   }
 });
 
@@ -575,6 +573,7 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
       cost: cost,
       status: 'active',
       type: 'drop_balls_now',
+      // stripePaymentIntentId: null, // Will be null by default, but sparse index allows this
     });
     await newSession.save();
     table.currentSessionId = newSession._id;
