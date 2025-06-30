@@ -1,4 +1,3 @@
-
 // routes/tableRoutes.js
 const express = require('express');
 const router = express.Router();
@@ -160,7 +159,7 @@ router.put('/:tableId', async (req, res) => {
 
 /**
  * @route POST /api/tables/:tableId/join-table
- * @description Allows a user to directly join an available table (0 players).
+ * @description Allows a user to directly join an available table (0 or 1 player).
  * @access Private
  * @body - None (user is identified by token)
  */
@@ -171,67 +170,162 @@ router.post('/:tableId/join-table', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
+    if (!table) return res.status(404).json({ message: 'Table not found.' });
 
-    // Check if table is available and has no players
-    if (table.status !== 'available' || table.currentPlayers.player1Id || table.currentPlayers.player2Id) {
-      return res.status(400).json({ message: 'Table is not available for direct joining. Try joining the queue.' }); // Changed to json
+    // Check if user is already playing on this table
+    const isAlreadyPlaying = table.currentPlayers.player1Id === userId || table.currentPlayers.player2Id === userId;
+    if (isAlreadyPlaying) {
+      return res.status(400).json({ message: 'You are already playing at this table.' });
     }
 
-    const user = await User.findById(userId); // Fetch user to check other tables/queues if needed
-    if (!user) return res.status(404).json({ message: 'User not found.' }); // Changed to json
+    // Determine available slots
+    const player1Occupied = table.currentPlayers.player1Id !== null;
+    const player2Occupied = table.currentPlayers.player2Id !== null;
+    const availableSlots = (player1Occupied ? 0 : 1) + (player2Occupied ? 0 : 1);
 
-    if (table.queue.includes(userId)) {
-      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); // Changed to json
+    // Conditions for direct join:
+    // 1. Table must be 'available' (meaning it's empty)
+    //    OR it's 'in_play' but has only one player (for the second player to join)
+    // 2. There must be at least one available slot.
+    // 3. The queue must be empty. If there's a queue, users should join the queue.
+    const canJoinDirectly = (
+      (table.status === 'available' && !player1Occupied && !player2Occupied) || // Completely empty table
+      (table.status === 'in_play' && (player1Occupied !== player2Occupied) && table.currentSessionId) // One player existing, and an active session
+    ) && availableSlots > 0 && table.queue.length === 0;
+
+
+    if (!canJoinDirectly) {
+      if (table.queue.length > 0) {
+          return res.status(400).json({ message: 'Table has a queue. Please join the queue instead.' });
+      }
+      if (availableSlots === 0) {
+          return res.status(400).json({ message: 'Table is already full.' });
+      }
+      // Fallback for other non-joinable states like 'maintenance', 'awaiting_confirmation'
+      return res.status(400).json({ message: `Table is currently in status '${table.status}'. Cannot join directly.` });
     }
 
-    table.currentPlayers.player1Id = userId; // User becomes Player 1
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found.' });
+
+    // Handle joining Player 1 or Player 2
+    let playerSlotFilled = null;
+    let currentSession = null; // To hold the session document
+
+
+    if (table.currentPlayers.player1Id === null) {
+      // User is the first player to join this table
+      table.currentPlayers.player1Id = userId;
+      playerSlotFilled = 'player1';
+
+      // Create a new session for the first player
+      const venue = await Venue.findById(table.venueId);
+      if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
+        console.error('Venue or perGameCost not configured for table:', tableId);
+        return res.status(500).json({ message: 'Venue game cost is not configured correctly.' });
+      }
+      currentSession = new Session({
+        tableId: table._id,
+        venueId: table.venueId,
+        player1Id: userId,
+        player2Id: null, // Still null until second player joins
+        startTime: new Date(),
+        cost: venue.perGameCost,
+        status: 'active',
+        type: 'direct_join',
+      });
+      await currentSession.save();
+      table.currentSessionId = currentSession._id; // Link session to table
+    } else if (table.currentPlayers.player2Id === null) {
+      // User is the second player to join this table
+      table.currentPlayers.player2Id = userId;
+      playerSlotFilled = 'player2';
+
+      // Update the existing session for the second player
+      if (table.currentSessionId) {
+        currentSession = await Session.findById(table.currentSessionId);
+        if (currentSession && currentSession.player2Id === null) {
+          currentSession.player2Id = userId;
+          await currentSession.save();
+        } else {
+          // This case implies an inconsistency: P1 is there, but no valid session to add P2 to
+          // Or P2 slot is already taken (should be caught by availableSlots check).
+          // Fallback to creating a new session (though ideally should not happen if logic is sound)
+          console.warn(`Table ${table.tableNumber} has P1 but no active session or invalid session for P2. Creating new fallback session.`);
+          const venue = await Venue.findById(table.venueId); // Re-fetch venue for cost
+          if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
+            console.error('Venue or perGameCost not configured for table (fallback session creation):', tableId);
+            return res.status(500).json({ message: 'Venue game cost is not configured correctly for fallback.' });
+          }
+          currentSession = new Session({ // Assign to currentSession for consistency
+            tableId: table._id,
+            venueId: table.venueId,
+            player1Id: table.currentPlayers.player1Id, // Keep P1
+            player2Id: userId, // New P2
+            startTime: new Date(), // New session start time
+            cost: venue.perGameCost,
+            status: 'active',
+            type: 'direct_join_fallback', // Indicate it's a fallback session
+          });
+          await currentSession.save();
+          table.currentSessionId = currentSession._id; // Link to the new fallback session
+        }
+      } else {
+        // This means P1 joined earlier, but no session ID was recorded/persisted
+        console.error(`Table ${table.tableNumber} has P1 but no currentSessionId. Cannot link P2. Creating new fallback session.`);
+        const venue = await Venue.findById(table.venueId); // Re-fetch venue for cost
+        if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
+          console.error('Venue or perGameCost not configured for table (fallback session creation):', tableId);
+          return res.status(500).json({ message: 'Venue game cost is not configured correctly for fallback.' });
+        }
+        currentSession = new Session({ // Assign to currentSession for consistency
+          tableId: table._id,
+          venueId: table.venueId,
+          player1Id: table.currentPlayers.player1Id, // Keep P1
+          player2Id: userId, // New P2
+          startTime: new Date(), // New session start time
+          cost: venue.perGameCost,
+          status: 'active',
+          type: 'direct_join_fallback', // Indicate it's a fallback session
+        });
+        await currentSession.save();
+        table.currentSessionId = currentSession._id; // Link to the new fallback session
+      }
+    } else {
+      // This case should be prevented by the `canJoinDirectly` check.
+      return res.status(400).json({ message: 'Table is already full.' });
+    }
+
     table.status = 'in_play'; // Table is now in play
-    table.queue = table.queue.filter(uid => uid !== userId); // Ensure they are removed from queue if they were somehow in it
+    table.queue = table.queue.filter(uid => uid !== userId); // Ensure they are removed from queue
 
-    await table.save();
+    await table.save(); // Save table after currentPlayers and currentSessionId update
 
-    // Create a new session for the game
-    const venue = await Venue.findById(table.venueId);
-    if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
-      console.error('Venue or perGameCost not configured for table:', tableId);
-      return res.status(500).json({ message: 'Venue game cost is not configured correctly.' }); // Changed to json
-    }
-
-    const newSession = new Session({
-      tableId: table._id,
-      venueId: table.venueId,
-      player1Id: userId,
-      player2Id: null, // Initially only one player
-      startTime: new Date(),
-      cost: venue.perGameCost,
-      status: 'active', // Directly active since they joined directly
-      type: 'drop_balls_now', // Can be refined to 'direct_join'
-      // stripePaymentIntentId: null, // Will be null by default, but sparse index allows this
-    });
-    await newSession.save();
-    table.currentSessionId = newSession._id;
-    await table.save();
 
     // Notify the user who just joined that they are now playing
     io.to(userId).emit('tableJoined', {
       tableId: table._id,
       tableNumber: table.tableNumber,
       message: `You are now playing on Table ${table.tableNumber}!`,
-      playerSlot: 'player1'
+      playerSlot: playerSlotFilled
     });
 
     // Manually populate queue (will be empty) for the general table status update
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
+    const updatedTableDoc = await Table.findById(table._id).lean(); // Re-fetch for freshest state
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
     // Populate current players details for the table status update
-    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
     io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).json({ message: 'Joined table successfully.' }); // Changed to json
+    res.status(200).json({ message: 'Joined table successfully.' });
 
   } catch (error) {
     console.error('Error joining table:', error.message);
-    res.status(500).json({ message: 'Failed to join table.' }); // Changed to json
+    // Specifically handle the duplicate key error if it reappears due to race conditions
+    if (error.code === 11000) {
+        return res.status(500).json({ message: 'Database error: Duplicate entry for session. This may be a race condition. Please try again.' });
+    }
+    res.status(500).json({ message: 'Failed to join table.' });
   }
 });
 
@@ -275,12 +369,7 @@ router.post('/:tableId/join-queue', async (req, res) => {
     const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
 
     // Emit real-time update to all clients in the venue's room
-    io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: finalTableState.queue, // Send the manually populated queue
-      status: finalTableState.status,
-      currentPlayers: finalTableState.currentPlayers // Include current players
-    });
+    io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Emit full table state
     console.log(`User ${userId} joined queue for table ${tableId}. Current queue length: ${finalTableState.queue.length}`);
 
     // Also send a specific notification to the joining user
@@ -322,12 +411,7 @@ router.post('/:tableId/leave-queue', async (req, res) => {
     // Populate current players details for the table status update
     const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
 
-    io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: finalTableState.queue, // Send the manually populated queue
-      status: finalTableState.status,
-      currentPlayers: finalTableState.currentPlayers // Include current players
-    });
+    io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Emit full table state
     console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${finalTableState.queue.length}`);
 
     res.status(200).json({ message: 'Successfully left queue.' }); // Changed to json
@@ -565,7 +649,7 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
     }
 
     const newSession = new Session({
-      tableId: table._id,
+      tableId: table._id, // Corrected from table._2_id
       venueId: table.venueId,
       player1Id: table.currentPlayers.player1Id, // Set to current players on table
       player2Id: table.currentPlayers.player2Id,
@@ -693,12 +777,7 @@ router.post('/:tableId/clear-queue', async (req, res) => {
     const io = getSocketIO();
     // Populate current players details for the table status update
     const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
-    io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: finalTableState.queue, // Send the empty queue
-      status: finalTableState.status,
-      currentPlayers: finalTableState.currentPlayers // Include current players
-    });
+    io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Emit full table state
     console.log(`Admin ${req.user.uid} cleared queue for table ${tableId}.`);
 
     res.status(200).json({ message: 'Queue cleared successfully.', queue: populatedQueue });
