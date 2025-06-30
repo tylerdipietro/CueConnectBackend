@@ -84,10 +84,12 @@ router.get('/:venueId/tables', async (req, res) => {
 
     // CRUCIAL FIX: Populate current players and queue details for the initial fetch
     const tablesWithAllPopulatedDetails = await Promise.all(tables.map(async (table) => {
-      const populatedQueue = await populateQueueWithUserDetails(table.queue);
-      const tableWithPopulatedPlayers = await populateTablePlayersDetails(table); // This will add player display names
-      return { ...tableWithPopulatedPlayers, queue: populatedQueue }; // Combine populated data
-    }));
+    const populatedQueue = await populateQueueWithUserDetails(table.queue);
+    const tableWithPopulatedQueue = { ...table, queue: populatedQueue };
+    const tableWithPopulatedPlayers = await populateTablePlayersDetails(tableWithPopulatedQueue);
+    return tableWithPopulatedPlayers;
+  }));
+
 
     res.json(tablesWithAllPopulatedDetails);
   }
