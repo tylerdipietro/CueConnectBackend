@@ -82,9 +82,10 @@ router.get('/:venueId/tables', async (req, res) => {
   try {
     const tables = await Table.find({ venueId: req.params.venueId }).lean();
 
+    // CRUCIAL FIX: Populate current players and queue details for the initial fetch
     const tablesWithAllPopulatedDetails = await Promise.all(tables.map(async (table) => {
       const populatedQueue = await populateQueueWithUserDetails(table.queue);
-      const tableWithPopulatedPlayers = await populateTablePlayersDetails(table); // Populate current players
+      const tableWithPopulatedPlayers = await populateTablePlayersDetails(table); // This will add player display names
       return { ...tableWithPopulatedPlayers, queue: populatedQueue }; // Combine populated data
     }));
 
@@ -626,7 +627,7 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
     const venue = await Venue.findById(table.venueId);
     if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
       console.error('Game cost not configured for this venue, or is invalid.');
-      return res.status(500).json({ message: 'Game cost not configured for this venue, or is invalid.' }); // Changed to json
+      return res.status(500).json({ message: 'Game cost is not configured for this venue, or is invalid.' }); // Changed to json
     }
     const cost = venue.perGameCost;
 
