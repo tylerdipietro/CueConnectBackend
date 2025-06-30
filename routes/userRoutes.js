@@ -4,25 +4,39 @@ const router = express.Router();
 const User = require('../models/User'); // User model
 
 /**
- * @route POST /api/users/fcm-token
- * @description Registers a device's FCM token for push notifications.
+ * @route POST /api/users/update-fcm-token
+ * @description Registers or updates a device's FCM token for push notifications.
  * @access Private (requires Firebase auth token)
  */
-router.post('/fcm-token', async (req, res) => {
+router.post('/update-fcm-token', async (req, res) => {
   const { fcmToken } = req.body;
   const userId = req.user.uid; // User ID from authenticated request
 
   if (!fcmToken) {
-    return res.status(400).send('FCM token is required.');
+    return res.status(400).json({ message: 'FCM token is required.' });
   }
 
   try {
-    // Add the new FCM token to the user's fcmTokens array if it's not already present.
-    await User.findByIdAndUpdate(userId, { $addToSet: { fcmTokens: fcmToken } });
-    res.status(200).send('FCM token registered successfully.');
+    // Find the user by ID
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    // Use $addToSet to add the FCM token only if it's not already present in the array
+    if (!user.fcmTokens.includes(fcmToken)) {
+      user.fcmTokens.push(fcmToken);
+      await user.save();
+      console.log(`[UserRoutes] FCM token '${fcmToken}' added for user '${userId}'.`);
+    } else {
+      console.log(`[UserRoutes] FCM token '${fcmToken}' already exists for user '${userId}'.`);
+    }
+    
+    res.status(200).json({ message: 'FCM token updated successfully.' });
   } catch (error) {
-    console.error('Error registering FCM token:', error.message);
-    res.status(500).send('Failed to register FCM token.');
+    console.error('[UserRoutes] Error updating FCM token:', error.message);
+    res.status(500).json({ message: 'Failed to update FCM token.' });
   }
 });
 
@@ -44,6 +58,7 @@ router.post('/sync', async (req, res) => {
         _id: uid,
         displayName,
         email,
+        fcmTokens: [], // Initialize fcmTokens array for new users
       });
       await user.save();
       console.log(`[User Sync] Created user: ${displayName} (${uid})`);
@@ -72,7 +87,7 @@ router.get('/balance', async (req, res) => {
     res.json({ balance: req.user.tokenBalance });
   } catch (error) {
     console.error('Error fetching user balance:', error.message);
-    res.status(500).send('Failed to fetch user balance.');
+    res.status(500).json({ message: 'Failed to fetch user balance.' });
   }
 });
 
