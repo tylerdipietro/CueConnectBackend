@@ -84,12 +84,10 @@ router.get('/:venueId/tables', async (req, res) => {
 
     // CRUCIAL FIX: Populate current players and queue details for the initial fetch
     const tablesWithAllPopulatedDetails = await Promise.all(tables.map(async (table) => {
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    const tableWithPopulatedQueue = { ...table, queue: populatedQueue };
-    const tableWithPopulatedPlayers = await populateTablePlayersDetails(tableWithPopulatedQueue);
-    return tableWithPopulatedPlayers;
-  }));
-
+      const populatedQueue = await populateQueueWithUserDetails(table.queue);
+      const tableWithPopulatedPlayers = await populateTablePlayersDetails(table); // This will add player display names
+      return { ...tableWithPopulatedPlayers, queue: populatedQueue }; // Combine populated data
+    }));
 
     res.json(tablesWithAllPopulatedDetails);
   }
@@ -187,14 +185,11 @@ router.post('/:tableId/join-table', async (req, res) => {
     const player2Occupied = table.currentPlayers.player2Id !== null;
     const availableSlots = (player1Occupied ? 0 : 1) + (player2Occupied ? 0 : 1);
 
-    // Conditions for direct join:
-    // 1. Table must be 'available' (meaning it's empty)
-    //    OR it's 'in_play' but has only one player (for the second player to join)
-    // 2. There must be at least one available slot.
-    // 3. The queue must be empty. If there's a queue, users should join the queue.
+    // CRUCIAL FIX: Refined conditions for direct join
     const canJoinDirectly = (
-      (table.status === 'available' && !player1Occupied && !player2Occupied) || // Completely empty table
-      (table.status === 'in_play' && (player1Occupied !== player2Occupied) && table.currentSessionId) // One player existing, and an active session
+      (table.status === 'available' && !player1Occupied && !player2Occupied) || // Case 1: Completely empty, available table
+      (table.status === 'available' && (player1Occupied !== player2Occupied)) || // Case 2: Available table with one player (winner-stays scenario)
+      (table.status === 'in_play' && (player1Occupied !== player2Occupied) && table.currentSessionId) // Case 3: In-play table with one player (second player joining active game)
     ) && availableSlots > 0 && table.queue.length === 0;
 
 
