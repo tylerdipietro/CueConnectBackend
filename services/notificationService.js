@@ -21,7 +21,7 @@ const sendPushNotification = async (fcmTokens, title, body, data = {}) => {
       title: title,
       body: body,
     },
-    data: stringifiedData, // 🔁 use stringified values only
+    data: stringifiedData, // 🔁 use stringified values only-
     apns: {
       payload: {
         aps: {
