@@ -15,9 +15,14 @@ const sendPushNotification = async (fcmTokens, title, body, data = {}) => {
       title,
       body,
     },
-    data: {
-      ...data,
-    },
+    // Convert all data values to strings
+const stringifiedData = {};
+Object.keys(data).forEach((key) => {
+  stringifiedData[key] = String(data[key]);
+});
+
+data: stringifiedData,
+
     android: {
       priority: 'high',
       notification: {
