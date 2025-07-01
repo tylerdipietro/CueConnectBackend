@@ -467,10 +467,19 @@ router.post('/:tableId/claim-win', async (req, res) => {
     if (loser.fcmTokens && loser.fcmTokens.length > 0) {
       console.log('[CLAIM-WIN] Sending push to tokens:', loser.fcmTokens);
       await sendPushNotification(
-        loser.fcmTokens,
-        'Win Claimed!',
-        `${req.user.displayName || req.user.email} claims victory on Table ${table.tableNumber}. Confirm or Dispute?`
-      );
+  loser.fcmTokens,
+  'Win Claimed!',
+  `${req.user.displayName || req.user.email} claims victory on Table ${table.tableNumber}. Confirm or Dispute?`,
+  {
+    type: 'win_confirmation',
+    tableId: table._id.toString(),
+    sessionId: table.currentSessionId || '',
+    winnerId: winnerId,
+    winnerName: req.user.displayName || req.user.email,
+    venueName: table.venueName || 'Venue Name',
+    tableNumber: table.tableNumber.toString()
+  }
+);
     }
 
     // Emit Socket.IO event to the loser
