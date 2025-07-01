@@ -1,47 +1,15 @@
+
 // routes/tableRoutes.js
 const express = require('express');
 const router = express.Router();
-const Table = require('../models/Table'); // Table model
-const Venue = require('../models/Venue'); // Venue model (for perGameCost and updating tableIds)
-const Session = require('../models/Session'); // Session model
-const User = require('../models/User'); // Import User model for manual population
-const { getSocketIO } = require('../services/socketService'); // Socket.IO instance
-const { sendPushNotification } = require('../services/notificationService'); // Push notification service
-const { inviteNextPlayer } = require('../services/gameService'); // Game logic service
-
-/**
- * Helper function to populate queue with user display names
- * This function fetches User documents based on the UIDs in the queue
- * and returns an array of objects containing the user's _id (UID) and displayName.
- * @param {Array<string>} queueIds - Array of user UIDs (strings) stored in the queue.
- * @returns {Promise<Array<{_id: string, displayName: string}>>} - A promise that resolves to an array
- * of objects, each containing the user's _id and displayName. If a user is not found,
- * their displayName will be 'Unnamed User'.
- */
-const populateQueueWithUserDetails = async (queueIds) => {
-  if (queueIds.length === 0) {
-    return [];
-  }
-  try {
-    // Find users whose _id (Firebase UID) is in the queueIds array.
-    // Select 'displayName'. Mongoose will include '_id' by default unless explicitly excluded.
-    const users = await User.find({ _id: { $in: queueIds } }).select('displayName').lean();
-
-    // Map the original queueIds array to maintain order and associate with fetched user details.
-    const populatedQueue = queueIds.map(uid => {
-      // Find the user object that matches the current UID
-      const user = users.find(u => u._id === uid);
-      // Return an object with _id and displayName, defaulting to 'Unnamed User' if not found
-      return { _id: uid, displayName: user ? user.displayName : 'Unnamed User' };
-    });
-    return populatedQueue;
-  } catch (error) {
-    console.error('Error in populateQueueWithUserDetails:', error.message);
-    // Return an empty array or re-throw, depending on desired error handling
-    return queueIds.map(uid => ({ _id: uid, displayName: 'Error User' })); // Fallback to avoid breaking frontend
-  }
-};
-
+const Table = require('../models/Table');
+const Venue = require('../models/Venue');
+const User = require('../models/User'); // Ensure User model is imported for checks
+const Session = require('../models/Session'); // Ensure Session model is imported
+const { getSocketIO } = require('../services/socketService');
+const { sendPushNotification } = require('../services/notificationService'); // Assuming this exists
+// Import new and updated helpers from gameService
+const { inviteNextPlayer, populateQueueWithUserDetails, populateTablePlayersDetails } = require('../services/gameService'); 
 
 /**
  * @route POST /api/tables
@@ -50,8 +18,6 @@ const populateQueueWithUserDetails = async (queueIds) => {
  * @body venueId, tableNumber, esp32DeviceId
  */
 router.post('/', async (req, res) => {
-  // Ensure the user is an admin
-  // This check relies on `req.user.isAdmin` being set by the `verifyFirebaseToken` middleware in server.js
   if (!req.user || req.user.isAdmin !== true) {
     return res.status(403).json({ message: 'Forbidden: Admin access required to register tables.' });
   }
@@ -63,47 +29,40 @@ router.post('/', async (req, res) => {
   }
 
   try {
-    // 1. Verify if the venueId actually exists
     const venue = await Venue.findById(venueId);
     if (!venue) {
       return res.status(404).json({ message: 'Venue not found.' });
     }
 
-    // 2. Check for duplicate esp32DeviceId (assuming it's unique across all tables)
     const existingTableWithEsp32Id = await Table.findOne({ esp32DeviceId: esp32DeviceId });
     if (existingTableWithEsp32Id) {
         return res.status(409).json({ message: 'Another table with this ESP32 Device ID already exists.' });
     }
 
-    // 3. Check for duplicate tableNumber within the same venue
     const existingTableInVenue = await Table.findOne({ venueId: venueId, tableNumber: tableNumber });
     if (existingTableInVenue) {
         return res.status(409).json({ message: `Table number "${tableNumber}" already exists in this venue.` });
     }
 
-    // 4. Create the new Table document
     const newTable = new Table({
       venueId,
       tableNumber,
       esp32DeviceId,
-      status: 'available', // Default status for a newly registered table
-      currentPlayers: { player1Id: null, player2Id: null },
+      status: 'available',
+      currentPlayers: { player1Id: null, player2Id: null }, // Initialize with no players
       currentSessionId: null,
-      queue: [], // Initialize empty queue
+      queue: [],
       lastGameEndedAt: null,
     });
     const savedTable = await newTable.save();
 
-    // 5. Update the associated Venue document to include the new table's ID
-    // We use $push to add the new table's ID to the tableIds array
-    // We also increment numberOfTables, ensuring this count reflects individually added tables
     await Venue.findByIdAndUpdate(
         venueId,
         { $push: { tableIds: savedTable._id }, $inc: { numberOfTables: 1 } },
-        { new: true, useFindAndModify: false } // `new: true` returns the updated document
+        { new: true, useFindAndModify: false }
     );
 
-    res.status(201).json(savedTable); // Respond with the newly created table
+    res.status(201).json(savedTable);
   } catch (error) {
     console.error('Error registering table:', error.message);
     res.status(500).json({ message: 'Failed to register table. Please try again later.' });
@@ -112,7 +71,7 @@ router.post('/', async (req, res) => {
 
 /**
  * @route GET /api/venues/:venueId/tables
- * @description Retrieves all tables for a specific venue, manually populating queue user display names.
+ * @description Retrieves all tables for a specific venue, manually populating queue user display names AND current player display names.
  * @access Private (requires Firebase auth token)
  */
 router.get('/:venueId/tables', async (req, res) => {
@@ -123,17 +82,20 @@ router.get('/:venueId/tables', async (req, res) => {
   try {
     const tables = await Table.find({ venueId: req.params.venueId }).lean();
 
-    // Crucial: Manually populate display names for each table's queue
-    // Use Promise.all to await all population operations concurrently
-    const tablesWithPopulatedQueue = await Promise.all(tables.map(async (table) => {
+    // CRUCIAL FIX: Populate current players and queue details for the initial fetch
+    const tablesWithAllPopulatedDetails = await Promise.all(tables.map(async (table) => {
       const populatedQueue = await populateQueueWithUserDetails(table.queue);
-      return { ...table, queue: populatedQueue }; // Replace the raw queue array with the populated one
+      const tableWithPopulatedPlayers = await populateTablePlayersDetails(table); // This will add player display names
+      return { ...tableWithPopulatedPlayers, queue: populatedQueue }; // Combine populated data
     }));
 
-    res.json(tablesWithPopulatedQueue); // Send the fully populated tables array
-  } catch (error) {
+    res.json(tablesWithAllPopulatedDetails);
+  }
+
+  catch (error) {
     console.error('Error fetching tables for venue:', error.message);
-    res.status(500).send('Failed to fetch tables for the venue.');
+    // Ensure this is always JSON, to avoid frontend JSON parse errors
+    res.status(500).json({ message: 'Failed to fetch tables for the venue.' });
   }
 });
 
@@ -164,11 +126,6 @@ router.put('/:tableId', async (req, res) => {
     }
 
     const updateFields = {};
-    // Note: oldTableNumber and oldEsp32DeviceId are not strictly needed for this update logic,
-    // but useful for logging or more complex conditional updates.
-    // let oldTableNumber = table.tableNumber;
-    // let oldEsp32DeviceId = table.esp32DeviceId;
-
     if (tableNumber !== undefined && String(tableNumber) !== String(table.tableNumber)) {
       updateFields.tableNumber = tableNumber;
     }
@@ -177,21 +134,19 @@ router.put('/:tableId', async (req, res) => {
     }
 
     if (Object.keys(updateFields).length === 0) {
-      // If no actual changes were requested, return the current table object
       return res.status(200).json({ message: 'No changes detected for table.', table });
     }
 
     const updatedTable = await Table.findByIdAndUpdate(
       tableId,
       { $set: updateFields },
-      { new: true, runValidators: true } // `new: true` returns the updated doc, `runValidators` runs schema validators
+      { new: true, runValidators: true }
     );
 
     res.status(200).json(updatedTable);
   } catch (error) {
     console.error('Error updating table:', error);
 
-    // Handle duplicate key errors specifically for tableNumber (within venue) or esp32DeviceId
     if (error.code === 11000) {
       if (error.keyPattern && error.keyPattern.venueId && error.keyPattern.tableNumber) {
         return res.status(409).json({ message: `A table with number "${tableNumber}" already exists in this venue.` });
@@ -205,6 +160,176 @@ router.put('/:tableId', async (req, res) => {
 
 
 /**
+ * @route POST /api/tables/:tableId/join-table
+ * @description Allows a user to directly join an available table (0 or 1 player).
+ * @access Private
+ * @body - None (user is identified by token)
+ */
+router.post('/:tableId/join-table', async (req, res) => {
+  const tableId = req.params.tableId;
+  const userId = req.user.uid;
+  const io = getSocketIO();
+
+  try {
+    const table = await Table.findById(tableId);
+    if (!table) return res.status(404).json({ message: 'Table not found.' });
+
+    // Check if user is already playing on this table
+    const isAlreadyPlaying = table.currentPlayers.player1Id === userId || table.currentPlayers.player2Id === userId;
+    if (isAlreadyPlaying) {
+      return res.status(400).json({ message: 'You are already playing at this table.' });
+    }
+
+    // Determine available slots
+    const player1Occupied = table.currentPlayers.player1Id !== null;
+    const player2Occupied = table.currentPlayers.player2Id !== null;
+    const availableSlots = (player1Occupied ? 0 : 1) + (player2Occupied ? 0 : 1);
+
+    // CRUCIAL FIX: Refined conditions for direct join
+    const canJoinDirectly = (
+      (table.status === 'available' && !player1Occupied && !player2Occupied) || // Case 1: Completely empty, available table
+      (table.status === 'available' && (player1Occupied !== player2Occupied)) || // Case 2: Available table with one player (winner-stays scenario)
+      (table.status === 'in_play' && (player1Occupied !== player2Occupied) && table.currentSessionId) // Case 3: In-play table with one player (second player joining active game)
+    ) && availableSlots > 0 && table.queue.length === 0;
+
+
+    if (!canJoinDirectly) {
+      if (table.queue.length > 0) {
+          return res.status(400).json({ message: 'Table has a queue. Please join the queue instead.' });
+      }
+      if (availableSlots === 0) {
+          return res.status(400).json({ message: 'Table is already full.' });
+      }
+      // Fallback for other non-joinable states like 'maintenance', 'awaiting_confirmation'
+      return res.status(400).json({ message: `Table is currently in status '${table.status}'. Cannot join directly.` });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found.' });
+
+    // Handle joining Player 1 or Player 2
+    let playerSlotFilled = null;
+    let currentSession = null; // To hold the session document
+
+
+    if (table.currentPlayers.player1Id === null) {
+      // User is the first player to join this table
+      table.currentPlayers.player1Id = userId;
+      playerSlotFilled = 'player1';
+
+      // Create a new session for the first player
+      const venue = await Venue.findById(table.venueId);
+      if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
+        console.error('Venue or perGameCost not configured for table:', tableId);
+        return res.status(500).json({ message: 'Venue game cost is not configured correctly.' });
+      }
+      currentSession = new Session({
+        tableId: table._id,
+        venueId: table.venueId,
+        player1Id: userId,
+        player2Id: null, // Still null until second player joins
+        startTime: new Date(),
+        cost: venue.perGameCost,
+        status: 'active',
+        type: 'direct_join',
+      });
+      await currentSession.save();
+      table.currentSessionId = currentSession._id; // Link session to table
+    } else if (table.currentPlayers.player2Id === null) {
+      // User is the second player to join this table
+      table.currentPlayers.player2Id = userId;
+      playerSlotFilled = 'player2';
+
+      // Update the existing session for the second player
+      if (table.currentSessionId) {
+        currentSession = await Session.findById(table.currentSessionId);
+        if (currentSession && currentSession.player2Id === null) {
+          currentSession.player2Id = userId;
+          await currentSession.save();
+        } else {
+          // This case implies an inconsistency: P1 is there, but no valid session to add P2 to
+          // Or P2 slot is already taken (should be caught by availableSlots check).
+          // Fallback to creating a new session (though ideally should not happen if logic is sound)
+          console.warn(`Table ${table.tableNumber} has P1 but no active session or invalid session for P2. Creating new fallback session.`);
+          const venue = await Venue.findById(table.venueId); // Re-fetch venue for cost
+          if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
+            console.error('Venue or perGameCost not configured for table (fallback session creation):', tableId);
+            return res.status(500).json({ message: 'Venue game cost is not configured correctly for fallback.' });
+          }
+          currentSession = new Session({ // Assign to currentSession for consistency
+            tableId: table._id,
+            venueId: table.venueId,
+            player1Id: table.currentPlayers.player1Id, // Keep P1
+            player2Id: userId, // New P2
+            startTime: new Date(), // New session start time
+            cost: venue.perGameCost,
+            status: 'active',
+            type: 'direct_join_fallback', // Indicate it's a fallback session
+          });
+          await currentSession.save();
+          table.currentSessionId = currentSession._id; // Link to the new fallback session
+        }
+      } else {
+        // This means P1 joined earlier, but no session ID was recorded/persisted
+        console.error(`Table ${table.tableNumber} has P1 but no currentSessionId. Cannot link P2. Creating new fallback session.`);
+        const venue = await Venue.findById(table.venueId); // Re-fetch venue for cost
+        if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
+          console.error('Venue or perGameCost not configured for table (fallback session creation):', tableId);
+          return res.status(500).json({ message: 'Venue game cost is not configured correctly for fallback.' });
+        }
+        currentSession = new Session({ // Assign to currentSession for consistency
+          tableId: table._id,
+          venueId: table.venueId,
+          player1Id: table.currentPlayers.player1Id, // Keep P1
+          player2Id: userId, // New P2
+          startTime: new Date(), // New session start time
+          cost: venue.perGameCost,
+          status: 'active',
+          type: 'direct_join_fallback', // Indicate it's a fallback session
+        });
+        await currentSession.save();
+        table.currentSessionId = currentSession._id; // Link to the new fallback session
+      }
+    } else {
+      // This case should be prevented by the `canJoinDirectly` check.
+      return res.status(400).json({ message: 'Table is already full.' });
+    }
+
+    table.status = 'in_play'; // Table is now in play
+    table.queue = table.queue.filter(uid => uid !== userId); // Ensure they are removed from queue
+
+    await table.save(); // Save table after currentPlayers and currentSessionId update
+
+
+    // Notify the user who just joined that they are now playing
+    io.to(userId).emit('tableJoined', {
+      tableId: table._id,
+      tableNumber: table.tableNumber,
+      message: `You are now playing on Table ${table.tableNumber}!`,
+      playerSlot: playerSlotFilled
+    });
+
+    // Manually populate queue (will be empty) for the general table status update
+    const updatedTableDoc = await Table.findById(table._id).lean(); // Re-fetch for freshest state
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    // Populate current players details for the table status update
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
+    console.log('[DEBUG-JOIN-TABLE] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
+    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
+
+    res.status(200).json({ message: 'Joined table successfully.' });
+
+  } catch (error) {
+    console.error('Error joining table:', error.message);
+    // Specifically handle the duplicate key error if it reappears due to race conditions
+    if (error.code === 11000) {
+        return res.status(500).json({ message: 'Database error: Duplicate entry for session. This may be a race condition. Please try again.' });
+    }
+    res.status(500).json({ message: 'Failed to join table.' });
+  }
+});
+
+/**
  * @route POST /api/tables/:tableId/join-queue
  * @description Allows a user to join the waitlist/queue for a specific table.
  * @access Private
@@ -216,188 +341,296 @@ router.post('/:tableId/join-queue', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
 
-    // Check if user is already in the queue or is currently playing
-    const alreadyInQueue = table.queue.includes(userId); // Since queue stores simple strings
+    // Check if table is full (2 players) or if user is already playing/in queue
     const isPlaying = table.currentPlayers.player1Id === userId || table.currentPlayers.player2Id === userId;
-
-    if (alreadyInQueue || isPlaying) {
-      return res.status(400).send('You are already in queue or playing at this table.');
+    if (isPlaying) {
+      return res.status(400).json({ message: 'You are already playing at this table.' }); // Changed to json
+    }
+    const alreadyInQueue = table.queue.includes(userId); // Since queue stores simple strings
+    if (alreadyInQueue) {
+      return res.status(400).json({ message: 'You are already in this table\'s queue.' }); // Changed to json
     }
 
+    // Only allow joining queue if table is in_play or occupied, or has 1 player, or has a queue
+    const numPlayers = (table.currentPlayers.player1Id ? 1 : 0) + (table.currentPlayers.player2Id ? 1 : 0);
+    if (numPlayers < 2 && table.queue.length === 0 && table.status === 'available') {
+      // If table is available and empty, they should use 'join-table' instead
+      return res.status(400).json({ message: 'Table is available. Use "join-table" to play immediately.' }); // Changed to json
+    }
+    
     table.queue.push(userId); // Add userId string to the queue array
     await table.save();
 
     // Manually populate the queue for the Socket.IO update and the response
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
+    const updatedTableDoc = await Table.findById(table._id).lean(); // Re-fetch for freshest state
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    // Populate current players details for the table status update
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
 
     // Emit real-time update to all clients in the venue's room
-    io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: populatedQueue, // Send the manually populated queue
-      status: table.status // Send the table's current status
-    });
-    console.log(`User ${userId} joined queue for table ${tableId}. Current queue length: ${populatedQueue.length}`);
+    console.log('[DEBUG-JOIN-QUEUE] Emitting finalTableState for queueUpdate:', JSON.stringify(finalTableState, null, 2));
+    io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Emit full table state
+    console.log(`User ${userId} joined queue for table ${tableId}. Current queue length: ${finalTableState.queue.length}`);
 
     // Also send a specific notification to the joining user
     io.to(userId).emit('queueJoined', { tableId: table._id, tableNumber: table.tableNumber });
 
-    res.status(200).send('Joined queue successfully.');
-
-    // If the table is available and no one is playing, invite the next player (could be the one who just joined)
-    if (table.status === 'available' && !table.currentPlayers.player1Id && populatedQueue.length > 0) {
-      inviteNextPlayer(tableId, io, sendPushNotification);
-    }
+    res.status(200).json({ message: 'Joined queue successfully.' }); // Changed to json
 
   } catch (error) {
     console.error('Error joining queue:', error.message);
-    res.status(500).send('Failed to join queue.');
+    res.status(500).json({ message: 'Failed to join queue.' }); // Changed to json
   }
 });
 
 /**
- * @route POST /api/tables/:tableId/accept-invitation
- * @description Handles a player accepting an invitation to play (their turn in queue).
+ * @route POST /api/tables/:tableId/leave-queue
+ * @description Allows a user to leave the queue for a specific table.
  * @access Private
  */
-router.post('/:tableId/accept-invitation', async (req, res) => {
+router.post('/:tableId/leave-queue', async (req, res) => {
   const tableId = req.params.tableId;
   const userId = req.user.uid;
   const io = getSocketIO();
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
 
-    // This block assumes `queue` stores objects with `userId` and `status` properties,
-    // which contradicts `queue: [String]` in models/Table.js.
-    // If your queue schema only stores UIDs, this logic needs to be re-evaluated.
-    const queueEntry = table.queue.find(q => q.userId === userId && q.status === 'invited');
-    if (!queueEntry) {
-      return res.status(400).send('No active invitation for you at this table, or your invitation has expired.');
+    const initialQueueLength = table.queue.length;
+    table.queue = table.queue.filter(id => id !== userId); // Filter by string UID
+
+    if (table.queue.length === initialQueueLength) {
+      return res.status(400).json({ message: 'You are not in this table\'s queue.' }); // Changed to json
     }
 
-    queueEntry.status = 'playing';
+    await table.save();
 
-    const venue = await Venue.findById(table.venueId);
-    if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
-        return res.status(500).send('Game cost not configured for this venue, or is invalid.');
+    // Manually populate for the response and socket update
+    const updatedTableDoc = await Table.findById(table._id).lean(); // Re-fetch for freshest state
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    // Populate current players details for the table status update
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
+
+    console.log('[DEBUG-LEAVE-QUEUE] Emitting finalTableState for queueUpdate:', JSON.stringify(finalTableState, null, 2));
+    io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Emit full table state
+    console.log(`User ${userId} left queue for table ${tableId}. Current queue: ${finalTableState.queue.length}`);
+
+    res.status(200).json({ message: 'Successfully left queue.' }); // Changed to json
+  } catch (error) {
+    console.error('Error leaving queue:', error.message);
+    res.status(500).json({ message: 'Failed to leave queue.' }); // Changed to json
+  }
+});
+
+/**
+ * @route POST /api/tables/:tableId/claim-win
+ * @description Allows an active player to claim a win against their opponent.
+ * @access Private (only active players can call this)
+ * @body winnerId, loserId (optional for more explicit claims)
+ */
+router.post('/:tableId/claim-win', async (req, res) => {
+  const tableId = req.params.tableId;
+  const winnerId = req.user.uid; // The user claiming the win
+  const io = getSocketIO();
+
+  try {
+    const table = await Table.findById(tableId);
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
+
+    // Ensure the user claiming the win is an active player on this table
+    const isPlayer1 = table.currentPlayers.player1Id === winnerId;
+    const isPlayer2 = table.currentPlayers.player2Id === winnerId;
+
+    if (!isPlayer1 && !isPlayer2) {
+      return res.status(403).json({ message: 'You are not an active player on this table.' }); // Changed to json
     }
-    const gameCost = venue.perGameCost;
-
-    const currentWinnerId = table.currentPlayers.player1Id;
-    if (currentWinnerId && currentWinnerId !== userId) {
-      table.currentPlayers.player2Id = userId;
-    } else {
-      table.currentPlayers.player1Id = userId;
+    if (!table.currentPlayers.player1Id || !table.currentPlayers.player2Id) {
+      return res.status(400).json({ message: 'Cannot claim win: Table does not have two active players.' }); // Changed to json
     }
 
-    table.status = 'in_play';
+    const loserId = isPlayer1 ? table.currentPlayers.player2Id : table.currentPlayers.player1Id;
+    const loser = await User.findById(loserId).select('fcmTokens displayName').lean();
 
-    // Remove users who are now playing from the queue
-    table.queue = table.queue.filter(q =>
-        (q.userId !== table.currentPlayers.player1Id && q.userId !== table.currentPlayers.player2Id) &&
-        q.status !== 'invited' // Also remove invited entries as they're now playing or expired
-    );
+    if (!loser) {
+      console.warn(`Opponent ${loserId} not found for win claim on table ${table.tableNumber}. Proceeding without confirmation.`);
+      return res.status(404).json({ message: 'Opponent not found.' }); // Changed to json
+    }
 
-    const newSession = new Session({
+    // Set table status to awaiting confirmation
+    table.status = 'awaiting_confirmation';
+    await table.save();
+
+    // Send push notification to the loser to confirm/dispute
+    if (loser.fcmTokens && loser.fcmTokens.length > 0) {
+      await sendPushNotification(
+        loser.fcmTokens,
+        'Win Claimed!',
+        `${req.user.displayName || req.user.email} claims victory on Table ${table.tableNumber}. Confirm or Dispute?`
+      );
+    }
+
+    // Emit Socket.IO event to the loser
+    io.to(loserId).emit('winClaimedNotification', {
       tableId: table._id,
-      venueId: table.venueId,
-      player1Id: table.currentPlayers.player1Id,
-      player2Id: table.currentPlayers.player2Id,
-      startTime: new Date(),
-      cost: gameCost,
-      status: 'pending', // Pending until payment is confirmed
-      type: 'per_game',
-    });
-    await newSession.save();
-    table.currentSessionId = newSession._id;
-    await table.save();
-
-    // Trigger payment flow on the client
-    io.to(userId).emit('paymentRequired', {
-      sessionId: newSession._id,
-      amount: newSession.cost,
-      tableNumber: table.tableNumber
+      tableNumber: table.tableNumber,
+      winnerId: winnerId,
+      winnerDisplayName: req.user.displayName || req.user.email,
+      message: `${req.user.displayName || req.user.email} claims victory. Confirm?`
     });
 
-    // Manually populate queue for the table status update
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    io.to(table.venueId.toString()).emit('tableStatusUpdate', { ...table.toJSON(), queue: populatedQueue });
-    res.status(200).send('Invitation accepted. Awaiting payment confirmation from client.');
+    // Also update the winner's UI to show "Awaiting Opponent Confirmation"
+    io.to(winnerId).emit('winClaimSent', {
+      tableId: table._id,
+      tableNumber: table.tableNumber,
+      message: `Waiting for ${loser.displayName || loserId} to confirm win.`
+    });
+
+    // Update table status for all viewers
+    const updatedTableDoc = await Table.findById(tableId).lean(); // Re-fetch for freshest state
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue); // Queue remains unchanged, but status does
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue }); // Populate players
+    console.log('[DEBUG-CLAIM-WIN] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
+    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
+
+    res.status(200).json({ message: 'Win claim sent for confirmation.' }); // Changed to json
 
   } catch (error) {
-    console.error('Error accepting invitation:', error.message);
-    res.status(500).send('Failed to accept invitation. An internal server error occurred.');
+    console.error('Error claiming win:', error.message);
+    res.status(500).json({ message: 'Failed to claim win.' }); // Changed to json
   }
 });
 
 /**
- * @route POST /api/tables/:tableId/decline-invitation
- * @description Handles a player declining an invitation to play.
- * @access Private
+ * @route POST /api/tables/:tableId/confirm-win
+ * @description Allows the opponent to confirm a win.
+ * @access Private (only the opponent can call this)
+ * @body winnerId (the ID of the player who claimed the win)
  */
-router.post('/:tableId/decline-invitation', async (req, res) => {
+router.post('/:tableId/confirm-win', async (req, res) => {
   const tableId = req.params.tableId;
-  const userId = req.user.uid;
+  const confirmerId = req.user.uid; // The user confirming the win (the loser)
+  const { winnerId } = req.body; // The ID of the player who claimed the win
   const io = getSocketIO();
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
 
-    // This block assumes `queue` stores objects with `userId` and `status` properties,
-    // which contradicts `queue: [String]` in models/Table.js.
-    // If your queue schema only stores UIDs, this logic needs to be re-evaluated.
-    const queueEntryIndex = table.queue.findIndex(q => q.userId === userId && q.status === 'invited');
-    if (queueEntryIndex === -1) {
-      return res.status(400).send('No active invitation found for you.');
+    // Ensure the confirmer is an active player and is the *opponent* of the winner
+    const isPlayer1 = table.currentPlayers.player1Id === winnerId && table.currentPlayers.player2Id === confirmerId;
+    const isPlayer2 = table.currentPlayers.player2Id === winnerId && table.currentPlayers.player1Id === confirmerId;
+
+    if (!isPlayer1 && !isPlayer2) {
+      return res.status(403).json({ message: 'You are not the designated opponent for this win confirmation.' }); // Changed to json
+    }
+    if (table.status !== 'awaiting_confirmation') {
+      return res.status(400).json({ message: 'Win confirmation is not currently pending for this table.' }); // Changed to json
     }
 
-    // Set status to 'declined' for this entry
-    table.queue[queueEntryIndex].status = 'declined';
+    const winner = await User.findById(winnerId); // Get winner's details for notification
+    const confirmerUser = await User.findById(confirmerId); // Get confirmer's details
+
+    // Process win:
+    // 1. End current session (if any)
+    if (table.currentSessionId) {
+      const session = await Session.findById(table.currentSessionId);
+      if (session) {
+        session.endTime = new Date();
+        session.status = 'completed';
+        await session.save();
+      }
+    }
+
+    // 2. Clear current players, potentially apply winner-stays logic
+    table.lastGameEndedAt = new Date();
+    table.currentSessionId = null;
+
+    // Winner-stays logic: Winner becomes player1, other slot is null.
+    table.currentPlayers.player1Id = winnerId;
+    table.currentPlayers.player2Id = null;
+    table.status = 'available'; // Table is now available for next opponent
+
     await table.save();
 
-    // Manually populate queue for the table status update
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    io.to(table.venueId.toString()).emit('tableStatusUpdate', { ...table.toJSON(), queue: populatedQueue });
-    res.status(200).send('Invitation declined.');
+    // 3. Notify Winner
+    if (winner && winner.fcmTokens && winner.fcmTokens.length > 0) {
+      await sendPushNotification(
+        winner.fcmTokens,
+        'Win Confirmed!',
+        `Your victory on Table ${table.tableNumber} was confirmed by ${confirmerUser.displayName || confirmerUser.email}.`
+      );
+    }
+    io.to(winnerId).emit('winConfirmed', { tableId: table._id, tableNumber: table.tableNumber, message: 'Your win has been confirmed!' });
 
-    // Invite the next player in queue if any
-    inviteNextPlayer(tableId, io, sendPushNotification);
+    // 4. Notify Confirmer (Loser)
+    io.to(confirmerId).emit('gameEnded', { tableId: table._id, tableNumber: table.tableNumber, message: 'Game ended. Your opponent claimed victory.' });
+
+
+    // 5. Invite the next player from the queue (if any, and a slot is now open)
+    // This will handle sending notifications and updating table status for next player
+    await inviteNextPlayer(tableId, io, sendPushNotification);
+
+
+    // Fetch the updated table and populate queue for sending consistent state to all viewers
+    const updatedTableAfterInvite = await Table.findById(tableId).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableAfterInvite.queue);
+    // Populate current players details for the table status update
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableAfterInvite, queue: populatedQueue });
+    console.log('[DEBUG-CONFIRM-WIN] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
+    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
+
+    res.status(200).json({ message: 'Win confirmed successfully.' }); // Changed to json
 
   } catch (error) {
-    console.error('Error declining invitation:', error.message);
-    res.status(500).send('Failed to decline invitation.');
+    console.error('Error confirming win:', error.message);
+    res.status(500).json({ message: 'Failed to confirm win.' }); // Changed to json
   }
 });
+
 
 /**
  * @route POST /api/tables/:tableId/drop-balls-now
- * @description Allows a user to pay and immediately activate an available table.
+ * @description This route allows a user to pay and immediately activate an available table.
+ * It's distinct from joining the queue or accepting an invitation.
  * @access Private
  */
 router.post('/:tableId/drop-balls-now', async (req, res) => {
   const tableId = req.params.tableId;
-  const userId = req.user.uid;
+  const userId = req.user.uid; // User initiating drop balls
   const io = getSocketIO();
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
-    if (table.status === 'in_play') return res.status(400).send('Table is currently in play. Cannot drop balls now.');
-    if (table.status === 'out_of_order') return res.status(400).send('Table is out of order and cannot be used.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
+    if (table.status === 'in_play') return res.status(400).json({ message: 'Table is currently in play. Cannot drop balls now.' }); // Changed to json
+    if (table.status === 'out_of_order') return res.status(400).json({ message: 'Table is out of order and cannot be used.' }); // Changed to json
+
+    // This endpoint now assumes the user is taking over an available table.
+    // If the table is empty and user wants to play alone (or wait for 2nd player)
+    if (!table.currentPlayers.player1Id && !table.currentPlayers.player2Id) {
+      table.currentPlayers.player1Id = userId;
+      table.status = 'in_play';
+    } else if (table.currentPlayers.player1Id && !table.currentPlayers.player2Id && table.currentPlayers.player1Id !== userId) {
+      // If P1 exists and this is a different user, they become P2
+      table.currentPlayers.player2Id = userId;
+      table.status = 'in_play';
+    } else {
+      return res.status(400).json({ message: 'Table is already occupied or you are already playing.' }); // Changed to json
+    }
 
     const venue = await Venue.findById(table.venueId);
     if (!venue || typeof venue.perGameCost !== 'number' || venue.perGameCost <= 0) {
-      return res.status(500).send('Game cost not configured for this venue, or is invalid.');
+      console.error('Game cost not configured for this venue, or is invalid.');
+      return res.status(500).json({ message: 'Game cost is not configured for this venue, or is invalid.' }); // Changed to json
     }
     const cost = venue.perGameCost;
 
     const user = await User.findById(userId);
     if (!user || user.tokenBalance < cost) {
-      return res.status(400).send('Insufficient tokens to drop balls. Please purchase more tokens.');
+      return res.status(400).json({ message: 'Insufficient tokens to drop balls. Please purchase more tokens.' }); // Changed to json
     }
 
     user.tokenBalance -= cost;
@@ -405,18 +638,16 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
 
     // Clear the existing queue as a direct play takes precedence
     if (table.queue.length > 0) {
-      table.queue.forEach(q => {
-        // q here is a string (UID), so q.userId will be undefined.
-        // It should be io.to(q).emit(...)
-        io.to(q).emit('queueUpdate', { // FIX: Changed q.userId to q
+      table.queue.forEach(qId => { // qId is just the UID string here
+        io.to(qId).emit('queueUpdate', {
           tableId: table._id,
           tableNumber: table.tableNumber,
           message: `Table ${table.tableNumber} is now occupied by a direct play. Your queue position has been removed.`,
           status: 'removed_by_direct_play',
-          newQueue: [] // Send empty queue for this specific user
+          newQueue: []
         });
         sendPushNotification(
-          q, // FIX: Changed q.userId to q
+          qId,
           'Table Occupied!',
           `Table ${table.tableNumber} is now being used by a direct play. Your queue position has been removed.`
         );
@@ -424,45 +655,44 @@ router.post('/:tableId/drop-balls-now', async (req, res) => {
       table.queue = []; // Clear the queue
     }
 
-    table.status = 'in_play';
-    table.currentPlayers.player1Id = userId;
-    table.currentPlayers.player2Id = null; // No second player for direct play initially
-
     const newSession = new Session({
-      tableId: table._id,
+      tableId: table._id, 
       venueId: table.venueId,
-      player1Id: userId,
-      player2Id: null,
+      player1Id: table.currentPlayers.player1Id, // Set to current players on table
+      player2Id: table.currentPlayers.player2Id,
       startTime: new Date(),
       cost: cost,
-      status: 'active', // Directly active since payment is confirmed
+      status: 'active',
       type: 'drop_balls_now',
+      // stripePaymentIntentId: null, // Will be null by default, but sparse index allows this
     });
     await newSession.save();
     table.currentSessionId = newSession._id;
     await table.save();
 
-    // Confirm to the specific user that balls are dropped
     io.to(userId).emit('dropBallsNowConfirmed', {
       tableId: table._id,
       tableNumber: table.tableNumber,
-      esp32DeviceId: table.esp32DeviceId
+      esp32DeviceId: table.esp32DeviceId,
+      playerSlot: table.currentPlayers.player1Id === userId ? 'player1' : 'player2'
     });
-    // Update user's token balance in real-time
     io.to(userId).emit('tokenBalanceUpdate', { newBalance: user.tokenBalance });
     sendPushNotification(userId, 'Game Started!', `Balls dropped on Table ${table.tableNumber}! Enjoy your game.`);
 
-    // Manually populate queue (now empty) for the table status update to all clients
-    const populatedQueue = await populateQueueWithUserDetails(table.queue); // Will be empty
-    io.to(table.venueId.toString()).emit('tableStatusUpdate', { ...table.toJSON(), queue: populatedQueue });
+    const populatedQueue = await populateQueueWithUserDetails(table.queue);
+    // Populate current players details for the table status update
+    const finalTableState = await populateTablePlayersDetails({ ...table.toJSON(), queue: populatedQueue });
+    console.log('[DEBUG-DROP-BALLS] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
+    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    res.status(200).send('Balls dropped and game started successfully!');
+    res.status(200).json({ message: 'Balls dropped and game started successfully!' }); // Changed to json
 
   } catch (error) {
     console.error('Error dropping balls now:', error.message);
-    res.status(500).send(error.message || 'Failed to drop balls due to an internal server error.');
+    res.status(500).json({ message: error.message || 'Failed to drop balls due to an internal server error.' }); // Changed to json
   }
 });
+
 
 /**
  * @route POST /api/tables/:tableId/game-completed
@@ -476,8 +706,8 @@ router.post('/:tableId/game-completed', async (req, res) => {
 
   try {
     const table = await Table.findById(tableId);
-    if (!table) return res.status(404).send('Table not found.');
-    if (table.status !== 'in_play') return res.status(400).send('Table is not currently in play.');
+    if (!table) return res.status(404).json({ message: 'Table not found.' }); // Changed to json
+    if (table.status !== 'in_play') return res.status(400).json({ message: 'Table is not currently in play.' }); // Changed to json
 
     const session = await Session.findById(table.currentSessionId);
     if (session) {
@@ -489,10 +719,9 @@ router.post('/:tableId/game-completed', async (req, res) => {
     table.lastGameEndedAt = new Date();
     table.currentSessionId = null;
 
-    // Implement winner-stays logic
-    if (session && session.type === 'per_game' && winnerId) {
-        // If it was a 'per_game' session and a winner is provided, that player stays
-        table.currentPlayers.player1Id = winnerId;
+    // Apply winner-stays logic if a winnerId is provided and valid
+    if (winnerId && (table.currentPlayers.player1Id === winnerId || table.currentPlayers.player2Id === winnerId)) {
+        table.currentPlayers.player1Id = winnerId; // Winner stays as Player 1
         table.currentPlayers.player2Id = null; // Clear second player slot
         io.to(winnerId).emit('gameEndedSuccess', { tableId: table._id, tableNumber: table.tableNumber, message: 'You won! Ready for next challenge.' });
     } else {
@@ -501,26 +730,26 @@ router.post('/:tableId/game-completed', async (req, res) => {
         table.currentPlayers.player2Id = null;
     }
     
-    table.status = 'available'; // Set table status back to available
+    table.status = 'available'; // Set table status back to available (or queued if queue exists)
 
     await table.save();
 
-    // Manually populate queue (now potentially empty or changed) for the table status update to all clients
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    io.to(table.venueId.toString()).emit('tableStatusUpdate', { ...table.toJSON(), queue: populatedQueue });
+    // After game completion, always try to invite the next player to fill any open slots
+    await inviteNextPlayer(tableId, io, sendPushNotification);
 
-    res.status(200).send('Game completed and table status updated successfully.');
+    // Fetch the updated table and populate queue for sending consistent state to all viewers
+    const updatedTableAfterInvite = await Table.findById(tableId).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableAfterInvite.queue);
+    // Populate current players details for the table status update
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableAfterInvite, queue: populatedQueue });
+    console.log('[DEBUG-GAME-COMPLETED] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
+    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
 
-    // If it was a 'per_game' session, try inviting the next player from the queue
-    if (session && session.type === 'per_game') {
-        inviteNextPlayer(tableId, io, sendPushNotification);
-    } else {
-        console.log(`Direct play game on table ${table.tableNumber} ended. Table is now available, no queue invitation triggered.`);
-    }
+    res.status(200).json({ message: 'Game completed and table status updated successfully.' }); // Changed to json
 
   } catch (error) {
     console.error('Error on game completion:', error.message);
-    res.status(500).send('Failed to process game completion due to an internal server error.');
+    res.status(500).json({ message: 'Failed to process game completion due to an internal server error.' }); // Changed to json
   }
 });
 
@@ -552,14 +781,13 @@ router.post('/:tableId/clear-queue', async (req, res) => {
     await table.save();
 
     // Manually populate the queue (which is now empty) for the Socket.IO update
+    const updatedTableDoc = await Table.findById(tableId).lean(); // Re-fetch for freshest state
     const populatedQueue = []; // An empty array is the correct populated queue here
+    const finalTableState = await populateTablePlayersDetails({ ...updatedTableDoc, queue: populatedQueue });
 
     const io = getSocketIO();
-    io.to(table.venueId.toString()).emit('queueUpdate', {
-      tableId: table._id,
-      newQueue: populatedQueue, // Send the empty queue
-      status: table.status
-    });
+    console.log('[DEBUG-CLEAR-QUEUE] Emitting finalTableState for queueUpdate:', JSON.stringify(finalTableState, null, 2));
+    io.to(table.venueId.toString()).emit('queueUpdate', finalTableState); // Emit full table state
     console.log(`Admin ${req.user.uid} cleared queue for table ${tableId}.`);
 
     res.status(200).json({ message: 'Queue cleared successfully.', queue: populatedQueue });
@@ -570,174 +798,91 @@ router.post('/:tableId/clear-queue', async (req, res) => {
 });
 
 /**
- * @route POST /api/tables/:tableId/confirm-win
- * @description Confirms a win for a specific session/table.
- * @access Private (requires Firebase auth token)
- * @body sessionId, winnerId (the user who claims to have won)
+ * @route POST /api/tables/:tableId/remove-player
+ * @description Allows an admin to remove a specific player from a table.
+ * @access Private (requires Firebase auth token and admin privileges)
+ * @param tableId - ID of the table to update
+ * @body playerIdToRemove - The UID of the player to remove (player1Id or player2Id)
  */
-router.post('/:tableId/confirm-win', async (req, res) => {
-  if (!req.user) {
-    return res.status(401).json({ message: 'Unauthorized: Authentication required.' });
+router.post('/:tableId/remove-player', async (req, res) => {
+  // 1. Admin Authorization Check
+  if (!req.user || req.user.isAdmin !== true) {
+    return res.status(403).json({ message: 'Forbidden: Admin access required to remove players.' });
   }
 
   const { tableId } = req.params;
-  const { sessionId, winnerId } = req.body;
-  const currentUserId = req.user.uid;
+  const { playerIdToRemove } = req.body;
   const io = getSocketIO();
 
-  if (!sessionId || !winnerId) {
-    return res.status(400).json({ message: 'Session ID and Winner ID are required.' });
+  if (!playerIdToRemove) {
+    return res.status(400).json({ message: 'Player ID to remove is required.' });
   }
 
   try {
-    const table = await Table.findById(tableId);
+    let table = await Table.findById(tableId); // Use 'let' as we'll modify and save
+
     if (!table) {
       return res.status(404).json({ message: 'Table not found.' });
     }
 
-    const session = await Session.findById(sessionId);
-    if (!session) {
-      return res.status(404).json({ message: 'Session not found.' });
+    let playerRemoved = false;
+    let removedPlayerDisplayName = 'a player';
+
+    // Check if player1 is the one to remove
+    if (table.currentPlayers.player1Id === playerIdToRemove) {
+      const removedUser = await User.findById(playerIdToRemove).select('displayName').lean();
+      removedPlayerDisplayName = removedUser ? removedUser.displayName : 'a player';
+      table.currentPlayers.player1Id = null;
+      playerRemoved = true;
+    }
+    // Check if player2 is the one to remove
+    else if (table.currentPlayers.player2Id === playerIdToRemove) {
+      const removedUser = await User.findById(playerIdToRemove).select('displayName').lean();
+      removedPlayerDisplayName = removedUser ? removedUser.displayName : 'a player';
+      table.currentPlayers.player2Id = null;
+      playerRemoved = true;
     }
 
-    // Ensure the current user is one of the players in the session
-    if (session.player1Id !== currentUserId && session.player2Id !== currentUserId) {
-      return res.status(403).json({ message: 'Forbidden: You are not a participant in this game.' });
+    if (!playerRemoved) {
+      return res.status(400).json({ message: 'Player not found on this table or already removed.' });
     }
 
-    // Check if the session is already completed or disputed
-    if (session.status === 'completed') {
-      return res.status(400).json({ message: 'Game already confirmed.' });
-    }
-    if (session.status === 'disputed') {
-      return res.status(400).json({ message: 'Game is currently under dispute.' });
-    }
-
-    // Logic for confirming the win
-    session.status = 'completed';
-    session.endTime = new Date();
-    await session.save();
-
-    // Award tokens to the winner (if applicable, e.g., if there's a prize pool or token gain)
-    const winnerUser = await User.findById(winnerId);
-    if (winnerUser) {
-      // Example: Award 5 tokens for a win (adjust as per your game economy)
-      const winTokens = 5; 
-      winnerUser.tokenBalance += winTokens;
-      await winnerUser.save();
-      io.to(winnerId).emit('tokenBalanceUpdate', { newBalance: winnerUser.tokenBalance });
-      console.log(`User ${winnerId} confirmed win and received ${winTokens} tokens.`);
-    }
-
-    // Notify both players that the win has been confirmed
-    const player1 = await User.findById(session.player1Id);
-    const player2 = await User.findById(session.player2Id);
-
-    if (player1) {
-      sendPushNotification(player1._id, 'Game Confirmed!', `The win on Table ${table.tableNumber} has been confirmed. ${winnerUser?.displayName || 'A player'} won!`);
-    }
-    if (player2) {
-      sendPushNotification(player2._id, 'Game Confirmed!', `The win on Table ${table.tableNumber} has been confirmed. ${winnerUser?.displayName || 'A player'} won!`);
-    }
-
-    // Update table status and current players based on winner-stays logic
-    table.status = 'available'; // Default to available after confirmation
-    table.currentPlayers.player1Id = null;
-    table.currentPlayers.player2Id = null;
-    table.currentSessionId = null;
-    table.lastGameEndedAt = new Date();
-    await table.save();
-
-    // Emit table status update to all clients in the venue
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    io.to(table.venueId.toString()).emit('tableStatusUpdate', { ...table.toJSON(), queue: populatedQueue });
-
-    res.status(200).json({ message: 'Win confirmed successfully.' });
-
-  } catch (error) {
-    console.error('Error confirming win:', error);
-    res.status(500).json({ message: 'Failed to confirm win due to an internal server error.' });
-  }
-});
-
-/**
- * @route POST /api/tables/:tableId/dispute-win
- * @description Records a dispute for a game session.
- * @access Private (requires Firebase auth token)
- * @body sessionId, disputerId (the user who is disputing)
- */
-router.post('/:tableId/dispute-win', async (req, res) => {
-  if (!req.user) {
-    return res.status(401).json({ message: 'Unauthorized: Authentication required.' });
-  }
-
-  const { tableId } = req.params;
-  const { sessionId, disputerId } = req.body; // disputerId should be req.user.uid
-  const currentUserId = req.user.uid;
-  const io = getSocketIO();
-
-  if (!sessionId || !disputerId) {
-    return res.status(400).json({ message: 'Session ID and Disputer ID are required.' });
-  }
-
-  try {
-    const table = await Table.findById(tableId);
-    if (!table) {
-      return res.status(404).json({ message: 'Table not found.' });
-    }
-
-    const session = await Session.findById(sessionId);
-    if (!session) {
-      return res.status(404).json({ message: 'Session not found.' });
-    }
-
-    // Ensure the current user is the one disputing and is a participant
-    if (disputerId !== currentUserId || (session.player1Id !== currentUserId && session.player2Id !== currentUserId)) {
-      return res.status(403).json({ message: 'Forbidden: You can only dispute your own games.' });
-    }
-
-    // Check if the session is already completed or disputed
-    if (session.status === 'completed') {
-      return res.status(400).json({ message: 'Game already confirmed, cannot dispute.' });
-    }
-    if (session.status === 'disputed') {
-      return res.status(400).json({ message: 'Game is already under dispute.' });
-    }
-
-    // Logic for disputing the win
-    session.status = 'disputed';
-    // You might want to add a `disputedBy` field to the session model
-    // session.disputedBy = currentUserId;
-    await session.save();
-
-    // Notify admins or relevant parties about the dispute
-    // You would typically have a mechanism to find admins (e.g., query users where isAdmin: true)
-    const admins = await User.find({ isAdmin: true }).select('fcmTokens').lean();
-    admins.forEach(adminUser => {
-      if (adminUser.fcmTokens && adminUser.fcmTokens.length > 0) {
-        sendPushNotification(adminUser._id, 'Game Dispute!', `A game on Table ${table.tableNumber} at ${session.venueId} has been disputed by ${req.user.displayName || req.user.email}. Session ID: ${sessionId}`);
+    // Update table status if slots become empty
+    if (!table.currentPlayers.player1Id && !table.currentPlayers.player2Id) {
+      table.status = 'available'; // Both slots are now empty
+    } else if (table.currentPlayers.player1Id || table.currentPlayers.player2Id) {
+      // If one player remains, status can remain 'in_play' or revert to 'occupied'
+      // Based on current schema, 'in_play' implies at least one player.
+      // If going from 2 players to 1, it's still 'in_play'. If from 1 to 0, then 'available'.
+      // No change needed to status if one player remains and it was already 'in_play'
+      if (table.status === 'awaiting_confirmation') {
+          // If a player was removed while awaiting confirmation, revert to in_play or available
+          table.status = (table.currentPlayers.player1Id || table.currentPlayers.player2Id) ? 'in_play' : 'available';
       }
-    });
-
-    // Notify the other player about the dispute
-    const otherPlayerId = session.player1Id === currentUserId ? session.player2Id : session.player1Id;
-    if (otherPlayerId) {
-        sendPushNotification(otherPlayerId, 'Game Disputed!', `The game on Table ${table.tableNumber} has been disputed by ${req.user.displayName || req.user.email}.`);
     }
 
-    // Update table status to reflect dispute (e.g., 'awaiting_confirmation' or a new 'disputed' status)
-    table.status = 'awaiting_confirmation'; // Or a new 'disputed' status if you define it
-    await table.save();
 
-    // Emit table status update to all clients in the venue
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    io.to(table.venueId.toString()).emit('tableStatusUpdate', { ...table.toJSON(), queue: populatedQueue });
+    // Also remove the player from the queue if they happen to be in it
+    table.queue = table.queue.filter(uid => uid !== playerIdToRemove);
 
-    res.status(200).json({ message: 'Win dispute submitted successfully. An administrator will review.' });
+    await table.save(); // Save the updated table state
+
+    // Re-fetch the table to ensure the freshest and populated data for Socket.IO emit
+    const updatedTableDoc = await Table.findById(tableId).lean();
+    const populatedQueue = await populateQueueWithUserDetails(updatedTableDoc.queue);
+    const populatedTableWithPlayers = await populateTablePlayersDetails(updatedTableDoc);
+    const finalTableState = { ...populatedTableWithPlayers, queue: populatedQueue };
+
+    // Emit real-time update to all clients in the venue's room
+    console.log('[DEBUG-REMOVE-PLAYER] Emitting finalTableState for tableStatusUpdate:', JSON.stringify(finalTableState, null, 2));
+    io.to(table.venueId.toString()).emit('tableStatusUpdate', finalTableState);
+    console.log(`Admin ${req.user.uid} removed player ${playerIdToRemove} (${removedPlayerDisplayName}) from table ${table.tableNumber}.`);
+
+    res.status(200).json({ message: `Player ${removedPlayerDisplayName} successfully removed from Table ${table.tableNumber}.` });
 
   } catch (error) {
-    console.error('Error disputing win:', error);
-    res.status(500).json({ message: 'Failed to dispute win due to an internal server error.' });
+    console.error('Error removing player from table:', error.message);
+    res.status(500).json({ message: 'Failed to remove player from table. Please try again later.' });
   }
 });
 
