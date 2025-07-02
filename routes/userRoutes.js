@@ -80,7 +80,7 @@ router.post('/update-fcm-token', async (req, res) => {
 });
 
 /**
- * @route POST /api/users/sync
+ * @route POST /api/user/sync (Note: The path is /api/user/sync due to server.js mounting)
  * @description Ensures a user document exists in MongoDB for the authenticated Firebase user.
  * @access Private (requires Firebase auth token)
  */
@@ -102,7 +102,7 @@ router.post('/sync', async (req, res) => {
         fcmTokens: [],
         tokenBalance: 0,
         isAdmin: false,
-        stripeCustomerId: null,
+        stripeCustomerId: null, // Ensure this is initialized
       });
       await user.save();
       console.log(`[User Sync] Created user: ${displayNameFromFirebase} (${uid})`);
@@ -129,7 +129,7 @@ router.post('/sync', async (req, res) => {
 
 
 /**
- * @route GET /api/users/balance
+ * @route GET /api/user/balance (Note: The path is /api/user/balance due to server.js mounting)
  * @description Gets the current authenticated user's token balance.
  * @access Private (requires Firebase auth token)
  */
