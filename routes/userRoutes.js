@@ -11,35 +11,32 @@ const { getSocketIO } = require('../services/socketService'); // Import Socket.I
  * @access Private (requires Firebase auth token, handled by middleware)
  */
 router.get('/profile', async (req, res) => {
-  // req.user is populated by the verifyFirebaseToken middleware
-  // It contains basic Firebase info + isAdmin, tokenBalance, stripeCustomerId from MongoDB
   if (!req.user || !req.user.uid) {
+    console.warn('[UserRoutes:/profile] req.user is null or missing UID. This should not happen if authMiddleware is working.');
     return res.status(401).json({ message: 'User not authenticated or UID missing.' });
   }
+  console.log(`[UserRoutes:/profile] Attempting to fetch profile for UID: ${req.user.uid}`);
 
   try {
-    // Fetch the full user object from MongoDB to ensure the latest data,
-    // especially tokenBalance and stripeCustomerId, which might be updated independently.
     const dbUser = await User.findById(req.user.uid).lean();
 
     if (!dbUser) {
-        // This case should ideally not be hit if authMiddleware creates the user,
-        // but it's a safeguard.
+        console.error(`[UserRoutes:/profile] User profile NOT FOUND in DB for UID: ${req.user.uid}`);
         return res.status(404).json({ message: 'User profile not found in database after authentication.' });
     }
+    console.log(`[UserRoutes:/profile] User profile found for UID: ${dbUser._id}. Token Balance: ${dbUser.tokenBalance}. Stripe Customer ID: ${dbUser.stripeCustomerId}`);
 
     res.status(200).json({
-      uid: dbUser._id, // Use dbUser._id as the UID
+      uid: dbUser._id,
       email: dbUser.email,
       displayName: dbUser.displayName,
       photoURL: dbUser.photoURL,
       isAdmin: dbUser.isAdmin,
-      tokenBalance: dbUser.tokenBalance, // Ensure tokenBalance is sent
-      stripeCustomerId: dbUser.stripeCustomerId, // Include Stripe Customer ID
-      // Do NOT send sensitive data like fcmTokens directly unless necessary and secured
+      tokenBalance: dbUser.tokenBalance,
+      stripeCustomerId: dbUser.stripeCustomerId,
     });
   } catch (error) {
-    console.error('[UserRoutes] Error fetching user profile:', error.message);
+    console.error('[UserRoutes:/profile] Error fetching user profile:', error.message);
     res.status(500).json({ message: 'Failed to fetch user profile.' });
   }
 });
@@ -52,23 +49,23 @@ router.get('/profile', async (req, res) => {
  */
 router.post('/update-fcm-token', async (req, res) => {
   const { fcmToken } = req.body;
-  const userId = req.user.uid; // User ID from authenticated request
+  const userId = req.user.uid;
 
   if (!fcmToken) {
     return res.status(400).json({ message: 'FCM token is required.' });
   }
+  console.log(`[UserRoutes:/update-fcm-token] Received request for user ${userId} with token: ${fcmToken}`);
 
   try {
-    // Find the user by ID (using _id as per your schema)
     const user = await User.findById(userId);
 
     if (!user) {
+      console.error(`[UserRoutes:/update-fcm-token] User not found in DB for UID: ${userId}`);
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Use $addToSet to add the FCM token only if it's not already present in the array
     if (!user.fcmTokens.includes(fcmToken)) {
-      user.fcmTokens.push(fcmToken); // Direct push is fine if you're not using $addToSet in update query
+      user.fcmTokens.push(fcmToken);
       await user.save();
       console.log(`[UserRoutes] FCM token '${fcmToken}' added for user '${userId}'.`);
     } else {
@@ -85,46 +82,44 @@ router.post('/update-fcm-token', async (req, res) => {
 /**
  * @route POST /api/users/sync
  * @description Ensures a user document exists in MongoDB for the authenticated Firebase user.
- * This route can be used for initial user sync or to update basic profile info.
  * @access Private (requires Firebase auth token)
  */
 router.post('/sync', async (req, res) => {
   try {
     const uid = req.user.uid;
-    // req.user.name is from Firebase decoded token, req.user.displayName is from MongoDB user
     const displayNameFromFirebase = req.user.name || 'Unnamed User';
     const emailFromFirebase = req.user.email;
+    console.log(`[UserRoutes:/sync] Syncing user: ${uid}`);
 
     let user = await User.findById(uid);
 
     if (!user) {
+      console.log(`[UserRoutes:/sync] User not found, creating new user for UID: ${uid}`);
       user = new User({
         _id: uid,
         displayName: displayNameFromFirebase,
         email: emailFromFirebase,
-        fcmTokens: [], // Initialize fcmTokens array for new users
-        tokenBalance: 0, // Initialize token balance for new users
-        isAdmin: false, // Default admin status
-        // stripeCustomerId will be null initially, populated on first purchase
+        fcmTokens: [],
+        tokenBalance: 0,
+        isAdmin: false,
+        stripeCustomerId: null,
       });
       await user.save();
       console.log(`[User Sync] Created user: ${displayNameFromFirebase} (${uid})`);
     } else if (!user.displayName && displayNameFromFirebase) {
-      // Update displayName if it's missing in DB but available from Firebase
       user.displayName = displayNameFromFirebase;
       await user.save();
       console.log(`[User Sync] Updated missing displayName for user: ${uid}`);
     }
+    console.log(`[UserRoutes:/sync] User synced. Returning user data for UID: ${user._id}`);
 
-    // Return the updated/found user object, ensuring it includes all relevant fields
     res.json({ success: true, user: {
         _id: user._id,
         displayName: user.displayName,
         email: user.email,
         tokenBalance: user.tokenBalance,
         isAdmin: user.isAdmin,
-        stripeCustomerId: user.stripeCustomerId, // Ensure stripeCustomerId is included
-        // Do NOT send sensitive data like fcmTokens here
+        stripeCustomerId: user.stripeCustomerId,
     }});
   } catch (error) {
     console.error('[User Sync] Error syncing user:', error.message);
@@ -139,11 +134,16 @@ router.post('/sync', async (req, res) => {
  * @access Private (requires Firebase auth token)
  */
 router.get('/balance', async (req, res) => {
+  if (!req.user || !req.user.uid) {
+    console.warn('[UserRoutes:/balance] req.user is null or missing UID.');
+    return res.status(401).json({ message: 'User not authenticated or UID missing.' });
+  }
+  console.log(`[UserRoutes:/balance] Fetching balance for UID: ${req.user.uid}`);
+
   try {
-    // req.user.tokenBalance is already populated by the `verifyFirebaseToken` middleware
-    // However, for the absolute latest balance, it's safer to fetch from DB again.
     const user = await User.findById(req.user.uid).select('tokenBalance').lean();
     if (!user) {
+        console.error(`[UserRoutes:/balance] User not found in DB for UID: ${req.user.uid}`);
         return res.status(404).json({ message: 'User not found.' });
     }
     res.json({ balance: user.tokenBalance });

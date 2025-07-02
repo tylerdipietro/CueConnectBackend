@@ -1,246 +1,155 @@
-// routes/paymentRoutes.js
+// routes/userRoutes.js
 const express = require('express');
 const router = express.Router();
-const { getStripeInstance } = require('../config/stripe'); // Stripe instance from your config
-const Session = require('../models/Session'); // Session model
 const User = require('../models/User'); // User model
-const { getSocketIO } = require('../services/socketService'); // Socket.IO instance
-const { sendPushNotification } = require('../services/notificationService'); // Push notification service
-const Table = require('../models/Table'); // Table model (for gameStartConfirmation)
-
-// Define your token to USD conversion rate
-// Example: 10 tokens = $1.00 USD, so 1 token = $0.10 USD
-const TOKEN_PRICE_PER_UNIT_USD = 0.10; // $0.10 per token
+const { getSocketIO } = require('../services/socketService'); // Import Socket.IO instance (if used in other user-related routes)
 
 /**
- * @route POST /api/payments/create-token-payment-intent
- * @description Creates a Stripe Payment Intent for purchasing in-app tokens.
- * This endpoint will also handle creating/retrieving a Stripe Customer and an Ephemeral Key.
+ * @route GET /api/user/profile
+ * @description Get the authenticated user's full profile information, including token balance and Stripe Customer ID.
+ * This route is expected by the frontend's App.tsx to populate the main user state.
+ * @access Private (requires Firebase auth token, handled by middleware)
+ */
+router.get('/profile', async (req, res) => {
+  if (!req.user || !req.user.uid) {
+    console.warn('[UserRoutes:/profile] req.user is null or missing UID. This should not happen if authMiddleware is working.');
+    return res.status(401).json({ message: 'User not authenticated or UID missing.' });
+  }
+  console.log(`[UserRoutes:/profile] Attempting to fetch profile for UID: ${req.user.uid}`);
+
+  try {
+    const dbUser = await User.findById(req.user.uid).lean();
+
+    if (!dbUser) {
+        console.error(`[UserRoutes:/profile] User profile NOT FOUND in DB for UID: ${req.user.uid}`);
+        return res.status(404).json({ message: 'User profile not found in database after authentication.' });
+    }
+    console.log(`[UserRoutes:/profile] User profile found for UID: ${dbUser._id}. Token Balance: ${dbUser.tokenBalance}. Stripe Customer ID: ${dbUser.stripeCustomerId}`);
+
+    res.status(200).json({
+      uid: dbUser._id,
+      email: dbUser.email,
+      displayName: dbUser.displayName,
+      photoURL: dbUser.photoURL,
+      isAdmin: dbUser.isAdmin,
+      tokenBalance: dbUser.tokenBalance,
+      stripeCustomerId: dbUser.stripeCustomerId,
+    });
+  } catch (error) {
+    console.error('[UserRoutes:/profile] Error fetching user profile:', error.message);
+    res.status(500).json({ message: 'Failed to fetch user profile.' });
+  }
+});
+
+
+/**
+ * @route POST /api/users/update-fcm-token
+ * @description Registers or updates a device's FCM token for push notifications.
  * @access Private (requires Firebase auth token)
- * @body {number} amountTokens - The number of tokens the user wants to purchase.
  */
-router.post('/create-token-payment-intent', async (req, res) => {
-  const { amountTokens } = req.body;
-  const userId = req.user.uid; // Firebase UID from authenticated user (set by authMiddleware)
-  const stripe = getStripeInstance(); // Get the initialized Stripe instance
+router.post('/update-fcm-token', async (req, res) => {
+  const { fcmToken } = req.body;
+  const userId = req.user.uid;
 
-  if (!userId) {
-    return res.status(401).json({ message: 'Authentication required.' });
+  if (!fcmToken) {
+    return res.status(400).json({ message: 'FCM token is required.' });
   }
-  if (!amountTokens || typeof amountTokens !== 'number' || amountTokens <= 0) {
-    return res.status(400).json({ message: 'Invalid amount of tokens specified.' });
-  }
+  console.log(`[UserRoutes:/update-fcm-token] Received request for user ${userId} with token: ${fcmToken}`);
 
   try {
-    const user = await User.findOne({ firebaseUid: userId });
-    if (!user) {
-      return res.status(404).json({ message: 'User not found in database.' });
-    }
-
-    // Calculate the amount in cents (Stripe requires amount in smallest currency unit)
-    const amountUSD = amountTokens * TOKEN_PRICE_PER_UNIT_USD;
-    const amountCents = Math.round(amountUSD * 100); // Convert to cents
-
-    // Stripe's minimum amount is typically 50 cents ($0.50 USD)
-    // Adjust this based on your minimum token package (e.g., if 1 token is $0.10, min 5 tokens)
-    if (amountCents < 50) {
-      return res.status(400).json({ message: `Minimum purchase amount is ${Math.ceil(50 / (TOKEN_PRICE_PER_UNIT_USD * 100))} tokens ($0.50).` });
-    }
-
-    let customerId = user.stripeCustomerId;
-
-    // 1. Create or retrieve a Stripe Customer
-    if (!customerId) {
-      console.log(`[Stripe] Creating new customer for user ${userId}`);
-      const customer = await stripe.customers.create({
-        metadata: { firebaseUid: userId, email: user.email },
-        name: user.displayName || user.email,
-        email: user.email,
-      });
-      customerId = customer.id;
-      user.stripeCustomerId = customerId; // Save customer ID to user profile
-      await user.save();
-    } else {
-      console.log(`[Stripe] Using existing customer ${customerId} for user ${userId}`);
-    }
-
-    // 2. Create an Ephemeral Key (for client-side security)
-    // The API version should match the version you're using in your Stripe dashboard
-    const ephemeralKey = await stripe.ephemeralKeys.create(
-      { customer: customerId },
-      { apiVersion: '2024-06-20' } // IMPORTANT: Use your Stripe API version here
-    );
-
-    // 3. Create a Payment Intent
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: amountCents, // Amount in cents
-      currency: 'usd',
-      customer: customerId,
-      setup_future_usage: 'off_session', // Optional: if you want to save card details for future use
-      automatic_payment_methods: {
-        enabled: true, // Enables all supported payment methods
-      },
-      metadata: {
-        firebaseUid: userId,
-        amountTokens: amountTokens, // Store token quantity in metadata
-        type: 'token_purchase', // Custom metadata for your records
-      },
-      description: `Purchase of ${amountTokens} tokens by ${user.email}`,
-    });
-
-    // Send the necessary client secrets and keys back to the frontend
-    res.json({
-      paymentIntent: paymentIntent.client_secret,
-      ephemeralKey: ephemeralKey.secret,
-      customer: customerId,
-      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY, // Send publishable key from backend
-    });
-
-  } catch (error) {
-    console.error('[Stripe Error] Failed to create payment intent:', error.message);
-    res.status(500).json({ message: 'Failed to initiate payment. Please try again.', error: error.message });
-  }
-});
-
-/**
- * @route POST /api/payments/confirm-token-purchase
- * @description Confirms a successful token purchase after Stripe Payment Sheet completes.
- * This endpoint should be called by the frontend AFTER the payment is successful on Stripe's side.
- * A more robust solution involves Stripe Webhooks for ultimate source of truth.
- * @access Private
- * @body {string} paymentIntentId - The ID of the Stripe Payment Intent.
- * @body {number} amountTokens - The number of tokens purchased (for verification).
- */
-router.post('/confirm-token-purchase', async (req, res) => {
-  const { paymentIntentId, amountTokens } = req.body;
-  const userId = req.user.uid; // Authenticated user ID
-  const stripe = getStripeInstance();
-  const io = getSocketIO();
-
-  if (!userId || !paymentIntentId || !amountTokens || typeof amountTokens !== 'number' || amountTokens <= 0) {
-    return res.status(400).json({ message: 'Missing or invalid required fields.' });
-  }
-
-  try {
-    // 1. Retrieve and verify the Payment Intent from Stripe
-    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-
-    // Basic verification:
-    // - Payment Intent status is 'succeeded'
-    // - Metadata matches the user and amountTokens (important for security and idempotency)
-    if (
-      paymentIntent.status !== 'succeeded' ||
-      paymentIntent.metadata.firebaseUid !== userId ||
-      parseInt(paymentIntent.metadata.amountTokens, 10) !== amountTokens
-    ) {
-      console.error(`[Stripe] Payment Intent verification failed for ${paymentIntentId}. Status: ${paymentIntent.status}, User ID mismatch: ${paymentIntent.metadata.firebaseUid} vs ${userId}, Tokens mismatch: ${paymentIntent.metadata.amountTokens} vs ${amountTokens}`);
-      return res.status(400).json({ message: 'Payment verification failed or details mismatch.' });
-    }
-
-    // 2. Check for idempotency: Has this payment intent already been processed?
-    // This prevents double-crediting tokens if the frontend calls this endpoint multiple times.
-    const existingSession = await Session.findOne({
-      paymentIntentId: paymentIntentId,
-      type: 'token_purchase',
-    });
-
-    if (existingSession) {
-      console.warn(`[Stripe] Tokens for PaymentIntent ${paymentIntentId} already credited. Skipping re-credit.`);
-      return res.status(200).json({ message: 'Tokens already credited.', newBalance: existingSession.purchasedTokens });
-    }
-
-    // 3. Find the user and update their token balance
-    const user = await User.findOne({ firebaseUid: userId });
-    if (!user) {
-      return res.status(404).json({ message: 'User not found in database.' });
-    }
-
-    user.tokenBalance += amountTokens;
-    await user.save();
-    console.log(`[Stripe] User ${userId} credited with ${amountTokens} tokens. New balance: ${user.tokenBalance}`);
-
-    // 4. Record the token purchase in your Session model
-    const newSession = new Session({
-      tableId: null, // Not associated with a table game
-      venueId: null, // Not associated with a venue
-      player1Id: userId, // The user who made the purchase
-      player2Id: null,
-      startTime: new Date(),
-      endTime: new Date(),
-      cost: paymentIntent.amount / 100, // Store cost in USD
-      status: 'completed',
-      type: 'token_purchase',
-      purchasedTokens: amountTokens,
-      stripePaymentIntentId: paymentIntentId, // Store the payment intent ID for idempotency
-    });
-    await newSession.save();
-    console.log(`[Stripe] Recorded token purchase session ${newSession._id} for PaymentIntent ${paymentIntentId}`);
-
-
-    // 5. Emit Socket.IO event to update frontend token balance in real-time
-    io.to(userId).emit('tokenBalanceUpdate', { newBalance: user.tokenBalance });
-
-    res.status(200).json({ message: 'Tokens loaded successfully!', newBalance: user.tokenBalance });
-
-  } catch (error) {
-    console.error('[Stripe Error] Error confirming token purchase:', error.message);
-    res.status(500).json({ message: 'Failed to confirm token purchase.', error: error.message });
-  }
-});
-
-
-/**
- * @route POST /api/payments/confirm
- * @description Confirms an internal game payment (deduction from user's token balance).
- * This is your existing game payment confirmation, kept as is.
- * @access Private
- */
-router.post('/confirm', async (req, res) => {
-  const { sessionId } = req.body; // sessionId links to our internal game session
-  const userId = req.user.uid; // The user making the payment
-  const io = getSocketIO();
-
-  try {
-    const session = await Session.findById(sessionId);
-    if (!session || (session.player1Id !== userId && session.player2Id !== userId)) {
-      return res.status(403).send('Unauthorized or game session not found for this user.');
-    }
-
     const user = await User.findById(userId);
-    if (!user || user.tokenBalance < session.cost) {
-      return res.status(400).send('Insufficient tokens. Please purchase more or try again.');
+
+    if (!user) {
+      console.error(`[UserRoutes:/update-fcm-token] User not found in DB for UID: ${userId}`);
+      return res.status(404).json({ message: 'User not found.' });
     }
 
-    user.tokenBalance -= session.cost;
-    await user.save();
-
-    session.status = 'active';
-    session.endTime = null;
-    await session.save();
-
-    const table = await Table.findById(session.tableId);
-    io.to(session.player1Id).emit('gameStartConfirmation', {
-        tableId: session.tableId,
-        tableNumber: table ? table.tableNumber : 'Unknown',
-        esp32DeviceId: table ? table.esp32DeviceId : null,
-        player2Id: session.player2Id
-    });
-    if (session.player2Id) {
-        io.to(session.player2Id).emit('gameStartConfirmation', {
-            tableId: session.tableId,
-            tableNumber: table ? table.tableNumber : 'Unknown',
-            esp32DeviceId: table ? table.esp32DeviceId : null,
-            player1Id: session.player1Id
-        });
+    if (!user.fcmTokens.includes(fcmToken)) {
+      user.fcmTokens.push(fcmToken);
+      await user.save();
+      console.log(`[UserRoutes] FCM token '${fcmToken}' added for user '${userId}'.`);
+    } else {
+      console.log(`[UserRoutes] FCM token '${fcmToken}' already exists for user '${userId}'.`);
     }
 
-    io.to(userId).emit('tokenBalanceUpdate', { newBalance: user.tokenBalance });
-
-    res.status(200).send('Payment confirmed. Game is starting.');
-
+    res.status(200).json({ message: 'FCM token updated successfully.' });
   } catch (error) {
-    console.error('Payment confirmation error:', error.message);
-    res.status(500).send('Payment failed due to an internal server error.');
+    console.error('[UserRoutes] Error updating FCM token:', error.message);
+    res.status(500).json({ message: 'Failed to update FCM token.' });
+  }
+});
+
+/**
+ * @route POST /api/users/sync
+ * @description Ensures a user document exists in MongoDB for the authenticated Firebase user.
+ * @access Private (requires Firebase auth token)
+ */
+router.post('/sync', async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const displayNameFromFirebase = req.user.name || 'Unnamed User';
+    const emailFromFirebase = req.user.email;
+    console.log(`[UserRoutes:/sync] Syncing user: ${uid}`);
+
+    let user = await User.findById(uid);
+
+    if (!user) {
+      console.log(`[UserRoutes:/sync] User not found, creating new user for UID: ${uid}`);
+      user = new User({
+        _id: uid,
+        displayName: displayNameFromFirebase,
+        email: emailFromFirebase,
+        fcmTokens: [],
+        tokenBalance: 0,
+        isAdmin: false,
+        stripeCustomerId: null,
+      });
+      await user.save();
+      console.log(`[User Sync] Created user: ${displayNameFromFirebase} (${uid})`);
+    } else if (!user.displayName && displayNameFromFirebase) {
+      user.displayName = displayNameFromFirebase;
+      await user.save();
+      console.log(`[User Sync] Updated missing displayName for user: ${uid}`);
+    }
+    console.log(`[UserRoutes:/sync] User synced. Returning user data for UID: ${user._id}`);
+
+    res.json({ success: true, user: {
+        _id: user._id,
+        displayName: user.displayName,
+        email: user.email,
+        tokenBalance: user.tokenBalance,
+        isAdmin: user.isAdmin,
+        stripeCustomerId: user.stripeCustomerId,
+    }});
+  } catch (error) {
+    console.error('[User Sync] Error syncing user:', error.message);
+    res.status(500).json({ message: 'Failed to sync user.' });
+  }
+});
+
+
+/**
+ * @route GET /api/users/balance
+ * @description Gets the current authenticated user's token balance.
+ * @access Private (requires Firebase auth token)
+ */
+router.get('/balance', async (req, res) => {
+  if (!req.user || !req.user.uid) {
+    console.warn('[UserRoutes:/balance] req.user is null or missing UID.');
+    return res.status(401).json({ message: 'User not authenticated or UID missing.' });
+  }
+  console.log(`[UserRoutes:/balance] Fetching balance for UID: ${req.user.uid}`);
+
+  try {
+    const user = await User.findById(req.user.uid).select('tokenBalance').lean();
+    if (!user) {
+        console.error(`[UserRoutes:/balance] User not found in DB for UID: ${req.user.uid}`);
+        return res.status(404).json({ message: 'User not found.' });
+    }
+    res.json({ balance: user.tokenBalance });
+  } catch (error) {
+    console.error('Error fetching user balance:', error.message);
+    res.status(500).json({ message: 'Failed to fetch user balance.' });
   }
 });
 
