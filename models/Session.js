@@ -42,8 +42,8 @@ const sessionSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    // ADDED 'direct_join' to the enum
-    enum: ['game', 'practice', 'token_purchase', 'direct_join'],
+    // ADDED 'direct_join_fallback' to the enum
+    enum: ['game', 'practice', 'token_purchase', 'direct_join', 'direct_join_fallback'],
     required: true,
   },
   // Specific fields for token purchases
