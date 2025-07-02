@@ -1,30 +1,36 @@
 // server.js
 require('dotenv').config(); // Load environment variables from .env file
 const express = require('express');
-const mongoose = require('mongoose'); // Already imported by config/db.js, but often useful here
 const cors = require('cors');
 const http = require('http'); // Import http module
 
 // Import your centralized configuration and service initializer
 const { initializeServices } = require('./config');
-const { getSocketIO } = require('./services/socketService'); // Import socket.io initializer
-const { verifyFirebaseToken } = require('./middleware/authMiddleware'); // Import the middleware
 
-// Initialize all services (MongoDB, Firebase Admin, Stripe)
-initializeServices();
+// Import the Socket.IO initializer and getter
+const { initializeSocketIO, getSocketIO } = require('./services/socketService'); // Ensure both are imported
 
 const app = express();
 const server = http.createServer(app); // Create HTTP server for Socket.IO
 
-// Initialize Socket.IO (after HTTP server is created)
-getSocketIO(); // This will get the already initialized instance from socketService.js
+// IMPORTANT: Initialize Socket.IO with the server instance RIGHT AFTER creating the server.
+initializeSocketIO(server);
+
+// Now initialize other services (MongoDB, Firebase Admin, Stripe)
+// These don't depend on the 'server' object directly for their setup,
+// but they might use the initialized Firebase Admin or Stripe instances.
+initializeServices();
+
 
 // Middleware
 app.use(cors()); // Enable CORS for all routes
 app.use(express.json()); // Body parser for JSON requests
 
+// Import the authentication middleware
+const { verifyFirebaseToken } = require('./middleware/authMiddleware');
+
 // Apply Firebase authentication middleware to all routes under '/api'
-// This middleware will verify the token and populate req.user (Firebase UID, email, isAdmin, tokenBalance, stripeCustomerId)
+// This middleware will verify the token and populate req.user
 // This MUST be placed BEFORE your routes that need authentication.
 app.use('/api', verifyFirebaseToken);
 
@@ -34,15 +40,14 @@ app.get('/', (req, res) => {
 });
 
 // Import routes
-const authRoutes = require('./routes/authRoutes'); // Assuming this handles login/signup and token generation
+const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const venueRoutes = require('./routes/venueRoutes');
 const tableRoutes = require('./routes/tableRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 
 // Use routes
-// Routes mounted under /api will now have req.user populated by verifyFirebaseToken
-app.use('/api/auth', authRoutes); // Auth routes might handle their own token verification or be public
+app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/venues', venueRoutes);
 app.use('/api/tables', tableRoutes);
