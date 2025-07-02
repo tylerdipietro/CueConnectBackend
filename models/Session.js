@@ -5,13 +5,11 @@ const sessionSchema = new mongoose.Schema({
   tableId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Table',
-    // Make optional, as token purchases won't have a tableId
     required: function() { return this.type !== 'token_purchase'; }
   },
   venueId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Venue',
-    // Make optional, as token purchases won't have a venueId
     required: function() { return this.type !== 'token_purchase'; }
   },
   player1Id: {
@@ -44,34 +42,32 @@ const sessionSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['game', 'practice', 'token_purchase'], // Differentiate between game sessions and token purchases
+    // ADDED 'direct_join' to the enum
+    enum: ['game', 'practice', 'token_purchase', 'direct_join'],
     required: true,
   },
   // Specific fields for token purchases
   purchasedTokens: {
     type: Number,
-    required: function() { return this.type === 'token_purchase'; }, // Required only for token purchases
+    required: function() { return this.type === 'token_purchase'; },
     min: 0,
   },
   stripePaymentIntentId: {
     type: String,
-    required: function() { return this.type === 'token_purchase'; }, // Required only for token purchases
-    unique: true, // Ensures idempotency: one payment intent leads to one session record
-    sparse: true, // Allows null for non-token_purchase sessions
+    required: function() { return this.type === 'token_purchase'; },
+    unique: true,
+    sparse: true,
   },
-  // NEW: stripePaymentStatus field
   stripePaymentStatus: {
     type: String,
-    enum: ['succeeded', 'pending', 'failed', 'canceled'], // Status from Stripe
-    required: function() { return this.type === 'token_purchase'; }, // Required only for token purchases
-    default: function() { return this.type === 'token_purchase' ? 'pending' : undefined; } // Default to 'pending' for new token purchases
+    enum: ['succeeded', 'pending', 'failed', 'canceled'],
+    required: function() { return this.type === 'token_purchase'; },
+    default: function() { return this.type === 'token_purchase' ? 'pending' : undefined; }
   },
-  // Add other game-specific fields if needed, e.g., winnerId, score, etc.
   winnerId: {
-    type: String, // Firebase UID of the winner
+    type: String,
     required: false,
   },
-  // For location-based services, if a session is tied to a specific table's location
   location: {
     type: {
       type: String,
@@ -79,13 +75,12 @@ const sessionSchema = new mongoose.Schema({
       default: 'Point',
     },
     coordinates: {
-      type: [Number], // [longitude, latitude]
-      required: false, // Not required for token_purchase
+      type: [Number],
+      required: false,
     },
   },
 }, { timestamps: true });
 
-// Index for efficient querying by paymentIntentId
 sessionSchema.index({ stripePaymentIntentId: 1 }, { unique: true, sparse: true });
 
 const Session = mongoose.model('Session', sessionSchema);
