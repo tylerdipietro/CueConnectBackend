@@ -2,9 +2,12 @@
 const express = require('express');
 const router = express.Router();
 const Venue = require('../models/Venue');
-const Table = require('../models/Table');
+const Table = require('../models/Table'); // Import Table model
 const authMiddleware = require('../middleware/authMiddleware');
 const { getSocketIO } = require('../services/socketService');
+// Import gameService functions for populating table details
+const { populateTablePlayersDetails, populateQueueWithUserDetails } = require('../services/gameService');
+
 
 // Apply authMiddleware to all routes in this router
 router.use(authMiddleware);
@@ -142,6 +145,34 @@ router.get('/:venueId', async (req, res) => {
     res.status(500).json({ message: 'Server error fetching venue.' });
   }
 });
+
+/**
+ * @route GET /api/venues/:venueId/tables-detailed
+ * @description Get all tables for a specific venue, with populated player and queue details.
+ * @access Private
+ */
+router.get('/:venueId/tables-detailed', async (req, res) => {
+  const { venueId } = req.params;
+  try {
+    const tables = await Table.find({ venueId }).lean(); // Fetch tables, use lean for performance
+
+    // Populate player and queue details for each table
+    const populatedTables = await Promise.all(
+      tables.map(async (table) => {
+        const populatedQueue = await populateQueueWithUserDetails(table.queue);
+        const tableWithQueue = { ...table, queue: populatedQueue };
+        const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
+        return fullyPopulatedTable;
+      })
+    );
+
+    res.json(populatedTables);
+  } catch (error) {
+    console.error('Error fetching detailed tables for venue:', error);
+    res.status(500).json({ message: 'Server error fetching detailed tables.', error: error.message });
+  }
+});
+
 
 /**
  * @route PUT /api/venues/:venueId
