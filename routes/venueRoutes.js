@@ -1,153 +1,258 @@
 // routes/venueRoutes.js
 const express = require('express');
 const router = express.Router();
-const Venue = require('../models/Venue'); // Venue model
-const Table = require('../models/Table'); // Table model
+const Venue = require('../models/Venue');
+const Table = require('../models/Table');
+const authMiddleware = require('../middleware/authMiddleware');
+const { getSocketIO } = require('../services/socketService');
 
-/**
- * @route GET /api/venues
- * @description Retrieves a list of all venues (admin only).
- * @access Private (requires Firebase auth token & admin privileges)
- */
-router.get('/', async (req, res) => {
-  // This check is crucial for admin-only routes
-  if (!req.user || req.user.isAdmin !== true) {
-    return res.status(403).json({ message: 'Forbidden: Admin access required.' });
-  }
-
-  try {
-    const venues = await Venue.find({}); // Fetch all venues
-    res.json(venues);
-  } catch (error) {
-    console.error('Error fetching all venues for admin:', error.message);
-    res.status(500).json({ message: 'Failed to fetch all venues. Please try again later.' });
-  }
-});
-
-
-/**
- * @route GET /api/venues/nearby
- * @description Retrieves a list of nearby bars/venues based on provided coordinates.
- * @access Private (requires Firebase auth token & `verifyFirebaseToken` middleware)
- * @query lat (latitude), lon (longitude), radiusMiles (search radius in miles)
- */
-router.get('/nearby', async (req, res) => {
-  // Ensure the user is authenticated, even if not admin for this route
-  if (!req.user) {
-    return res.status(401).json({ message: 'Unauthorized: Authentication required to find nearby venues.' });
-  }
-
-  // Explicitly parse query parameters as numbers for robustness
-  const lat = parseFloat(req.query.lat);
-  const lon = parseFloat(req.query.lon);
-  const radiusMiles = parseFloat(req.query.radiusMiles); // Ensure this matches frontend's 'radiusMiles'
-
-  if (isNaN(lat) || isNaN(lon) || isNaN(radiusMiles) || radiusMiles <= 0) {
-    console.error(`Missing or invalid query parameters: lat=${req.query.lat}, lon=${req.query.lon}, radiusMiles=${req.query.radiusMiles}`);
-    return res.status(400).json({ message: 'Latitude, longitude, and radiusMiles are required query parameters and must be valid numbers.' });
-  }
-
-  const radiusKm = radiusMiles * 1.60934; // Convert miles to kilometers
-  const radiusMeters = radiusKm * 1000; // Convert kilometers to meters
-
-  try {
-    const venues = await Venue.aggregate([
-      {
-        $geoNear: {
-          near: { type: 'Point', coordinates: [lon, lat] }, // MongoDB expects [longitude, latitude]
-          distanceField: 'dist.calculated',
-          maxDistance: radiusMeters,
-          spherical: true,
-        },
-      },
-      { $sort: { 'dist.calculated': 1 } },
-    ]);
-
-    res.json(venues);
-  } catch (error) {
-    console.error('Error fetching nearby venues:', error.message);
-    res.status(500).json({ message: 'Failed to fetch nearby venues. Please try again later.' });
-  }
-});
+// Apply authMiddleware to all routes in this router
+router.use(authMiddleware);
 
 /**
  * @route POST /api/venues
- * @description Registers a new venue and creates associated tables.
- * @access Private (requires Firebase auth token and admin privileges)
- * @body name, address, latitude, longitude, numberOfTables
+ * @description Register a new venue and create its tables.
+ * @access Private (Admin only)
+ * @body {string} name
+ * @body {string} address
+ * @body {number} latitude
+ * @body {number} longitude
+ * @body {number} numberOfTables
+ * @body {number} [perGameCost] - Optional: Cost per game in tokens. Defaults to 10.
  */
 router.post('/', async (req, res) => {
-  // The `verifyFirebaseToken` middleware already attached to '/api/venues'
-  // should have populated `req.user` with Firebase decoded token and `isAdmin` status from MongoDB.
-  if (!req.user || req.user.isAdmin !== true) {
-    return res.status(403).json({ message: 'Forbidden: Admin access required.' });
+  const { name, address, latitude, longitude, numberOfTables, perGameCost } = req.body;
+  const ownerId = req.user.uid; // Firebase UID from authenticated user
+
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ message: 'Access denied. Only administrators can register venues.' });
   }
 
-  const { name, address, latitude, longitude, numberOfTables } = req.body;
-
-  if (!name || !address || !latitude || !longitude || numberOfTables === undefined || isNaN(numberOfTables)) {
-    return res.status(400).json({ message: 'All fields (name, address, latitude, longitude, numberOfTables) are required and valid.' });
+  if (!name || !address || typeof latitude !== 'number' || typeof longitude !== 'number' || !numberOfTables || numberOfTables <= 0) {
+    return res.status(400).json({ message: 'Missing required venue information (name, address, latitude, longitude, numberOfTables).' });
   }
 
   try {
-    // Create the new venue
     const newVenue = new Venue({
       name,
       address,
-      ownerId: req.user.uid, // Optionally assign the admin user as the owner
       location: {
         type: 'Point',
-        coordinates: [parseFloat(longitude), parseFloat(latitude)] // MongoDB expects [longitude, latitude]
+        coordinates: [longitude, latitude], // GeoJSON stores as [longitude, latitude]
       },
-      numberOfTables: parseInt(numberOfTables, 10), // Store the number of tables
-      // perGameCost could be set by admin later, or default
-      perGameCost: 10 // Example default cost
+      ownerId,
+      numberOfTables,
+      perGameCost: perGameCost !== undefined ? perGameCost : 10, // Set default if not provided
     });
+
     const savedVenue = await newVenue.save();
 
-    // Create individual Table documents for this venue
-    const tablesToCreate = [];
-    for (let i = 0; i < numberOfTables; i++) {
-      tablesToCreate.push({
+    const createdTables = [];
+    for (let i = 1; i <= numberOfTables; i++) {
+      const newTable = new Table({
         venueId: savedVenue._id,
-        tableNumber: i + 1, // Simple sequential numbering
-        status: 'available', // Default status for new tables
-        // other table properties like QR code, Bluetooth ID could be added here
+        tableNumber: i,
+        status: 'available',
       });
+      await newTable.save();
+      createdTables.push(newTable._id);
     }
-    // Use insertMany for efficiency when adding multiple tables
-    await Table.insertMany(tablesToCreate);
 
-    res.status(201).json(savedVenue); // Respond with the newly created venue
+    savedVenue.tableIds = createdTables;
+    await savedVenue.save();
+
+    res.status(201).json(savedVenue);
   } catch (error) {
-    console.error('Error registering venue:', error.message);
-    // More specific error handling could be added, e.g., for duplicate venue names
-    if (error.code === 11000) { // MongoDB duplicate key error
-      res.status(409).json({ message: 'A venue with this name or location already exists.' });
-    } else {
-      res.status(500).json({ message: 'Failed to register venue. Please try again later.' });
-    }
+    console.error('Error registering venue:', error);
+    res.status(500).json({ message: 'Server error during venue registration.', error: error.message });
   }
 });
 
 /**
- * @route GET /api/venues/:venueId/tables
- * @description Retrieves all tables for a specific venue.
- * @access Private (requires Firebase auth token & `verifyFirebaseToken` middleware)
+ * @route GET /api/venues
+ * @description Get all venues (Admin only).
+ * @access Private (Admin only)
  */
-router.get('/:venueId/tables', async (req, res) => {
-  // Ensure the user is authenticated for this route
-  if (!req.user) {
-    return res.status(401).json({ message: 'Unauthorized: Authentication required to view tables.' });
+router.get('/', async (req, res) => {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ message: 'Access denied. Only administrators can view all venues.' });
+  }
+  try {
+    const venues = await Venue.find({});
+    res.json(venues);
+  } catch (error) {
+    console.error('Error fetching all venues:', error);
+    res.status(500).json({ message: 'Server error fetching venues.' });
+  }
+});
+
+/**
+ * @route GET /api/venues/nearby
+ * @description Get venues near a given latitude and longitude.
+ * @access Private
+ * @query {number} lat - Latitude
+ * @query {number} lon - Longitude
+ * @query {number} [radiusMiles=5] - Radius in miles
+ */
+router.get('/nearby', async (req, res) => {
+  const { lat, lon, radiusMiles } = req.query;
+
+  if (typeof lat === 'undefined' || typeof lon === 'undefined') {
+    return res.status(400).json({ message: 'Latitude and longitude are required.' });
+  }
+
+  const latitude = parseFloat(lat);
+  const longitude = parseFloat(lon);
+  const radius = parseFloat(radiusMiles || '5') / 3963.2; // Convert miles to radians (Earth's radius in miles)
+
+  if (isNaN(latitude) || isNaN(longitude) || isNaN(radius)) {
+    return res.status(400).json({ message: 'Invalid latitude, longitude, or radius.' });
   }
 
   try {
-    const tables = await Table.find({ venueId: req.params.venueId }).lean();
-    res.json(tables);
+    const venues = await Venue.find({
+      location: {
+        $geoWithin: {
+          $centerSphere: [[longitude, latitude], radius]
+        }
+      }
+    }).lean(); // Use .lean() for faster queries if you don't need Mongoose documents
+
+    res.json(venues);
   } catch (error) {
-    console.error('Error fetching tables for venue:', error.message);
-    res.status(500).send('Failed to fetch tables for the venue.');
+    console.error('Error fetching nearby venues:', error);
+    res.status(500).json({ message: 'Server error fetching nearby venues.' });
   }
 });
+
+/**
+ * @route GET /api/venues/:venueId
+ * @description Get a specific venue by ID.
+ * @access Private
+ */
+router.get('/:venueId', async (req, res) => {
+  try {
+    const venue = await Venue.findById(req.params.venueId);
+    if (!venue) {
+      return res.status(404).json({ message: 'Venue not found.' });
+    }
+    res.json(venue);
+  } catch (error) {
+    console.error('Error fetching venue by ID:', error);
+    res.status(500).json({ message: 'Server error fetching venue.' });
+  }
+});
+
+/**
+ * @route PUT /api/venues/:venueId
+ * @description Update a venue's details.
+ * @access Private (Admin only, or venue owner)
+ * @body {string} [name]
+ * @body {string} [address]
+ * @body {number} [latitude]
+ * @body {number} [longitude]
+ * @body {number} [numberOfTables]
+ * @body {number} [perGameCost]
+ */
+router.put('/:venueId', async (req, res) => {
+  const { name, address, latitude, longitude, numberOfTables, perGameCost } = req.body;
+  const { venueId } = req.params;
+  const userId = req.user.uid;
+
+  try {
+    const venue = await Venue.findById(venueId);
+    if (!venue) {
+      return res.status(404).json({ message: 'Venue not found.' });
+    }
+
+    // Authorization: Only admin or venue owner can update
+    if (!req.user.isAdmin && venue.ownerId !== userId) {
+      return res.status(403).json({ message: 'Access denied. You are not authorized to update this venue.' });
+    }
+
+    if (name) venue.name = name;
+    if (address) venue.address = address;
+    if (typeof latitude === 'number' && typeof longitude === 'number') {
+      venue.location = {
+        type: 'Point',
+        coordinates: [longitude, latitude],
+      };
+    }
+    if (typeof numberOfTables === 'number' && numberOfTables >= 0) {
+      // Handle changes in numberOfTables: add or remove tables
+      const currentTablesCount = await Table.countDocuments({ venueId: venue._id });
+      if (numberOfTables > currentTablesCount) {
+        // Add new tables
+        for (let i = currentTablesCount + 1; i <= numberOfTables; i++) {
+          const newTable = new Table({
+            venueId: venue._id,
+            tableNumber: i,
+            status: 'available',
+          });
+          await newTable.save();
+          venue.tableIds.push(newTable._id);
+        }
+      } else if (numberOfTables < currentTablesCount) {
+        // Remove tables (consider logic for active sessions before removal)
+        // For simplicity, we'll just remove the last tables.
+        // In a real app, you'd want to check if tables are in use.
+        const tablesToRemove = await Table.find({ venueId: venue._id })
+          .sort({ tableNumber: -1 })
+          .limit(currentTablesCount - numberOfTables);
+
+        for (const table of tablesToRemove) {
+          await Table.findByIdAndDelete(table._id);
+          venue.tableIds = venue.tableIds.filter(id => id.toString() !== table._id.toString());
+        }
+      }
+      venue.numberOfTables = numberOfTables;
+    }
+    // NEW: Update perGameCost
+    if (typeof perGameCost === 'number' && perGameCost >= 0) {
+      venue.perGameCost = perGameCost;
+    }
+
+    const updatedVenue = await venue.save();
+    res.json(updatedVenue);
+  } catch (error) {
+    console.error('Error updating venue:', error);
+    res.status(500).json({ message: 'Server error updating venue.', error: error.message });
+  }
+});
+
+
+/**
+ * @route DELETE /api/venues/:venueId
+ * @description Delete a venue and its associated tables.
+ * @access Private (Admin only)
+ */
+router.delete('/:venueId', async (req, res) => {
+  const { venueId } = req.params;
+
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ message: 'Access denied. Only administrators can delete venues.' });
+  }
+
+  try {
+    const venue = await Venue.findById(venueId);
+    if (!venue) {
+      return res.status(404).json({ message: 'Venue not found.' });
+    }
+
+    // Delete all tables associated with the venue
+    await Table.deleteMany({ venueId: venue._id });
+    console.log(`Deleted tables for venue ${venueId}`);
+
+    // Delete the venue itself
+    await Venue.findByIdAndDelete(venueId);
+    console.log(`Deleted venue ${venueId}`);
+
+    res.status(200).json({ message: 'Venue and associated tables deleted successfully.' });
+  } catch (error) {
+    console.error('Error deleting venue:', error);
+    res.status(500).json({ message: 'Server error deleting venue.', error: error.message });
+  }
+});
+
 
 module.exports = router;

@@ -2,22 +2,53 @@
 const mongoose = require('mongoose');
 
 const venueSchema = new mongoose.Schema({
-  name: { type: String, required: true, trim: true }, // Added required, trim for better data quality
-  address: { type: String, required: true, trim: true },
-  ownerId: { type: String, ref: 'User' },
-  location: {
-    type: { type: String, default: 'Point', enum: ['Point'], required: true },
-    coordinates: { type: [Number], required: true } // [longitude, latitude]
+  name: {
+    type: String,
+    required: true,
+    trim: true,
   },
-  perGameCost: { type: Number, default: 10 }, // Default cost in tokens
-  numberOfTables: { type: Number, default: 0 }, // Keeps a count of tables, can be managed by logic
-  // ADDED: Array to store references to associated Table documents
-  tableIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Table' }], // This will store IDs of tables
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
-});
+  address: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+  location: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point',
+      required: true,
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      required: true,
+    },
+  },
+  ownerId: {
+    type: String, // Firebase UID of the owner
+    required: true,
+  },
+  numberOfTables: {
+    type: Number,
+    required: true,
+    min: 0,
+  },
+  tableIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Table',
+  }],
+  // NEW FIELD: Cost per game in tokens
+  perGameCost: {
+    type: Number,
+    required: true, // Make it required, set a default if needed in route
+    default: 10, // Default cost of 10 tokens per game
+    min: 0,
+  },
+}, { timestamps: true });
 
+// Add a 2dsphere index for geospatial queries
 venueSchema.index({ location: '2dsphere' });
-venueSchema.pre('save', function(next) { this.updatedAt = new Date(); next(); });
 
-module.exports = mongoose.model('Venue', venueSchema);
+const Venue = mongoose.model('Venue', venueSchema);
+
+module.exports = Venue;
