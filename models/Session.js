@@ -27,7 +27,7 @@ const sessionSchema = new mongoose.Schema({
   },
   endTime: {
     type: Date,
-    required: false, // Can be null if game is ongoing or for token purchases
+    required: false, // Can be null if game is ongoing or for token purchase
   },
   cost: {
     type: Number, // Cost in tokens or monetary value
