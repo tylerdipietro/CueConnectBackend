@@ -1,4 +1,5 @@
-// models/Venue.js
+// backend/models/Venue.js
+
 const mongoose = require('mongoose');
 
 const venueSchema = new mongoose.Schema({
@@ -14,40 +15,39 @@ const venueSchema = new mongoose.Schema({
   },
   location: {
     type: {
-      type: String,
-      enum: ['Point'],
-      default: 'Point',
+      type: String, // Don't do `{ location: { type: String } }`
+      enum: ['Point'], // 'location.type' must be 'Point'
       required: true,
+      default: 'Point', // Set default to 'Point'
     },
     coordinates: {
-      type: [Number], // [longitude, latitude]
+      type: [Number], // Array of [longitude, latitude]
       required: true,
+      index: '2dsphere', // Create a geospatial index
     },
-  },
-  ownerId: {
-    type: String, // Firebase UID of the owner
-    required: true,
   },
   numberOfTables: {
     type: Number,
     required: true,
     min: 0,
+    default: 0,
   },
-  tableIds: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Table',
-  }],
-  // NEW FIELD: Cost per game in tokens
-  perGameCost: {
+  perGameCost: { // NEW FIELD: Cost per game in tokens
     type: Number,
-    required: true, // Make it required, set a default if needed in route
-    default: 10, // Default cost of 10 tokens per game
+    required: true,
     min: 0,
+    default: 10, // Default cost, can be changed by admin
   },
-}, { timestamps: true });
-
-// Add a 2dsphere index for geospatial queries
-venueSchema.index({ location: '2dsphere' });
+  // You might want to add fields like:
+  // owner: {
+  //   type: mongoose.Schema.Types.ObjectId,
+  //   ref: 'User',
+  // },
+  // contactInfo: String,
+  // operatingHours: String,
+}, {
+  timestamps: true, // Adds createdAt and updatedAt timestamps
+});
 
 const Venue = mongoose.model('Venue', venueSchema);
 
