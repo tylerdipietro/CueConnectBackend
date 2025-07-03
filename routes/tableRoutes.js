@@ -637,4 +637,59 @@ router.post('/:tableId/clear-queue', async (req, res) => {
 });
 
 
+// NEW ROUTE: Pay for table with tokens (MODIFIED TO ONLY DEDUCT TOKENS)
+/**
+ * @route POST /api/tables/:tableId/pay-with-tokens
+ * @description Deduct tokens from user's balance for a table. Does NOT affect table status or player assignment.
+ * @access Private
+ * @body {number} cost - The number of tokens to deduct (should match venue's perGameCost).
+ */
+router.post('/:tableId/pay-with-tokens', async (req, res) => {
+  const { tableId } = req.params;
+  const { cost } = req.body;
+  const userId = req.user.uid;
+  const io = getSocketIO();
+
+  try {
+    // 1. Find the user and table
+    const user = await User.findOne({ firebaseUid: userId });
+    const table = await Table.findById(tableId).populate('venueId'); // Populate venue to get perGameCost
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+    if (!table) {
+      return res.status(404).json({ message: 'Table not found.' });
+    }
+
+    // 2. Verify cost matches venue's perGameCost
+    const expectedCost = table.venueId.perGameCost;
+    if (cost !== expectedCost) {
+      return res.status(400).json({ message: `Mismatch in table cost. Expected ${expectedCost}, received ${cost}.` });
+    }
+
+    // 3. Check token balance
+    if (user.tokenBalance < cost) {
+      return res.status(400).json({ message: 'Insufficient token balance.' });
+    }
+
+    // 4. Deduct tokens
+    user.tokenBalance -= cost;
+    await user.save();
+
+    // 5. Emit token balance update to user (ONLY this update)
+    io.to(userId).emit('tokenBalanceUpdate', { newBalance: user.tokenBalance });
+
+    // IMPORTANT: No changes to table status or currentPlayers here.
+    // No tableStatusUpdate emitted for the venue room.
+
+    res.status(200).json({ message: `Successfully paid ${cost} tokens for Table ${table.tableNumber}. Your new balance is ${user.tokenBalance} tokens.`, newBalance: user.tokenBalance });
+
+  } catch (error) {
+    console.error('Error paying with tokens:', error);
+    res.status(500).json({ message: 'Server error processing token payment.', error: error.message });
+  }
+});
+
+
 module.exports = router;
