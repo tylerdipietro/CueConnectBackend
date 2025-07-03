@@ -4,7 +4,7 @@ const router = express.Router();
 const Table = require('../models/Table');
 const User = require('../models/User');
 const Session = require('../models/Session');
-const Venue = require('../models/Venue');
+const Venue = require('../models/Venue'); // Make sure Venue is imported if needed for notifications
 const authMiddleware = require('../middleware/authMiddleware');
 const { getSocketIO } = require('../services/socketService');
 const { sendPushNotification } = require('../services/notificationService');
@@ -199,12 +199,13 @@ router.post('/:tableId/direct-join', async (req, res) => {
       // Notify both players that game has started
       const p1 = await User.findById(table.currentPlayers.player1Id);
       const p2 = await User.findById(userId);
+      const venue = await Venue.findById(table.venueId); // Fetch venue for name
 
       if (p1 && p1.fcmToken) {
-        sendPushNotification(p1.fcmToken, 'Game Started!', `Your game on Table ${table.tableNumber} at ${venueName} has started!`);
+        sendPushNotification(p1.fcmToken, 'Game Started!', `Your game on Table ${table.tableNumber} at ${venue?.name || 'a venue'} has started!`);
       }
       if (p2 && p2.fcmToken) {
-        sendPushNotification(p2.fcmToken, 'Game Started!', `Your game on Table ${table.tableNumber} at ${venueName} has started!`);
+        sendPushNotification(p2.fcmToken, 'Game Started!', `Your game on Table ${table.tableNumber} at ${venue?.name || 'a venue'} has started!`);
       }
     } else {
       // Both slots are occupied
@@ -336,6 +337,7 @@ router.post('/:tableId/claim-win', async (req, res) => {
   try {
     const session = await Session.findById(sessionId);
     const table = await Table.findById(tableId);
+    const venue = await Venue.findById(table.venueId); // Fetch venue for notification
 
     if (!session || !table) {
       return res.status(404).json({ message: 'Session or Table not found.' });
@@ -378,14 +380,14 @@ router.post('/:tableId/claim-win', async (req, res) => {
         sendPushNotification(
           opponent.fcmToken,
           'Game Result Confirmation',
-          `${winnerUser.displayName || winnerUser.email} claims victory on Table ${table.tableNumber} at ${venue.name}. Confirm or Dispute?`,
+          `${winnerUser.displayName || winnerUser.email} claims victory on Table ${table.tableNumber} at ${venue?.name || 'a venue'}. Confirm or Dispute?`,
           {
             type: 'win_confirmation',
             sessionId: sessionId,
             tableId: tableId,
             winnerId: winnerId,
             winnerName: winnerUser.displayName || winnerUser.email,
-            venueName: venue.name, // Assuming venue is available or fetch it
+            venueName: venue?.name || 'Unknown Venue', // Pass venue name
             tableNumber: table.tableNumber,
           }
         );
@@ -424,6 +426,7 @@ router.post('/:tableId/confirm-win', async (req, res) => {
   const { tableId } = req.params;
   const { sessionId, winnerId } = req.body; // winnerId is the player who claimed the win
   const confirmerId = req.user.uid; // confirmerId is the current authenticated user
+  const io = getSocketIO();
 
   try {
     const session = await Session.findById(sessionId);
@@ -460,7 +463,6 @@ router.post('/:tableId/confirm-win', async (req, res) => {
     await table.save();
     console.log(`[ConfirmWin] Table ${tableId} reset to available.`);
 
-    const io = getSocketIO();
     const populatedTable = await populateTablePlayersDetails(await populateQueueWithUserDetails(table.toObject()));
     io.to(table.venueId.toString()).emit('tableUpdate', populatedTable); // Emit update to venue room
 
@@ -531,6 +533,106 @@ router.post('/:tableId/dispute-win', async (req, res) => {
   } catch (error) {
     console.error('Error disputing win:', error);
     res.status(500).json({ message: 'Server error disputing win.', error: error.message });
+  }
+});
+
+/**
+ * @route POST /api/tables/:tableId/remove-player
+ * @description Admin action to remove a specific player from an active table.
+ * @access Private (Admin only)
+ * @body {string} playerIdToRemove - The Firebase UID of the player to remove.
+ */
+router.post('/:tableId/remove-player', async (req, res) => {
+  const { tableId } = req.params;
+  const { playerIdToRemove } = req.body;
+  const io = getSocketIO();
+
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ message: 'Access denied. Only administrators can remove players.' });
+  }
+  if (!playerIdToRemove) {
+    return res.status(400).json({ message: 'Player ID to remove is required.' });
+  }
+
+  try {
+    const table = await Table.findById(tableId);
+    if (!table) {
+      return res.status(404).json({ message: 'Table not found.' });
+    }
+
+    let playerRemoved = false;
+    if (table.currentPlayers.player1Id === playerIdToRemove) {
+      table.currentPlayers.player1Id = null;
+      playerRemoved = true;
+      console.log(`[Admin] Player1 (${playerIdToRemove}) removed from table ${tableId}.`);
+    } else if (table.currentPlayers.player2Id === playerIdToRemove) {
+      table.currentPlayers.player2Id = null;
+      playerRemoved = true;
+      console.log(`[Admin] Player2 (${playerIdToRemove}) removed from table ${tableId}.`);
+    } else {
+      return res.status(400).json({ message: 'Player not found on this table.' });
+    }
+
+    // If both players are removed, reset table status
+    if (!table.currentPlayers.player1Id && !table.currentPlayers.player2Id) {
+      table.status = 'available';
+      table.currentSessionId = null; // Clear session if no players
+      console.log(`[Admin] Table ${tableId} is now available.`);
+    } else if (table.currentPlayers.player1Id && !table.currentPlayers.player2Id) {
+      // If only player 2 was removed and player 1 remains, table is still occupied
+      table.status = 'occupied';
+      console.log(`[Admin] Table ${tableId} is now occupied by one player.`);
+    }
+
+    await table.save();
+
+    const populatedTable = await populateTablePlayersDetails(await populateQueueWithUserDetails(table.toObject()));
+    io.to(table.venueId.toString()).emit('tableUpdate', populatedTable); // Emit update to venue room
+
+    res.status(200).json({ message: 'Player removed successfully.', table: populatedTable });
+  } catch (error) {
+    console.error('Error removing player from table:', error);
+    res.status(500).json({ message: 'Server error removing player.', error: error.message });
+  }
+});
+
+/**
+ * @route POST /api/tables/:tableId/clear-queue
+ * @description Admin action to clear the queue for a specific table.
+ * @access Private (Admin only)
+ */
+router.post('/:tableId/clear-queue', async (req, res) => {
+  const { tableId } = req.params;
+  const io = getSocketIO();
+
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ message: 'Access denied. Only administrators can clear queues.' });
+  }
+
+  try {
+    const table = await Table.findById(tableId);
+    if (!table) {
+      return res.status(404).json({ message: 'Table not found.' });
+    }
+
+    if (table.queue.length === 0) {
+      return res.status(200).json({ message: 'Queue is already empty.', table: table });
+    }
+
+    table.queue = []; // Clear the queue
+    if (table.status === 'queued') {
+      table.status = 'available'; // If only queueing, revert to available
+    }
+    await table.save();
+    console.log(`[Admin] Queue for table ${tableId} cleared.`);
+
+    const populatedTable = await populateTablePlayersDetails(await populateQueueWithUserDetails(table.toObject()));
+    io.to(table.venueId.toString()).emit('tableUpdate', populatedTable); // Emit update to venue room
+
+    res.status(200).json({ message: 'Queue cleared successfully.', table: populatedTable });
+  } catch (error) {
+    console.error('Error clearing queue:', error);
+    res.status(500).json({ message: 'Server error clearing queue.', error: error.message });
   }
 });
 
