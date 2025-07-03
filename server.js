@@ -14,7 +14,13 @@ const app = express();
 const server = http.createServer(app); // Create HTTP server for Socket.IO
 
 // IMPORTANT: Initialize Socket.IO with the server instance RIGHT AFTER creating the server.
-initializeSocketIO(server);
+// If you need CORS options for Socket.IO, pass them here.
+initializeSocketIO(server, {
+  cors: {
+    origin: "*", // Allow all origins for development, restrict in production
+    methods: ["GET", "POST"]
+  }
+});
 
 // Now initialize other services (MongoDB, Firebase Admin, Stripe)
 // These don't depend on the 'server' object directly for their setup,
@@ -27,12 +33,13 @@ app.use(cors()); // Enable CORS for all routes
 app.use(express.json()); // Body parser for JSON requests
 
 // Import the authentication middleware
-const { verifyFirebaseToken } = require('./middleware/authMiddleware');
+// CORRECTED: Import the default export directly
+const authMiddleware = require('./middleware/authMiddleware');
 
 // Apply Firebase authentication middleware to all routes under '/api'
 // This middleware will verify the token and populate req.user
 // This MUST be placed BEFORE your routes that need authentication.
-app.use('/api', verifyFirebaseToken);
+app.use('/api', authMiddleware); // CORRECTED: Use the directly imported function
 
 // Basic route for testing (does not require auth)
 app.get('/', (req, res) => {
