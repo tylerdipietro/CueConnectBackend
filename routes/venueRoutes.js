@@ -146,23 +146,34 @@ router.get('/:venueId', async (req, res) => {
   }
 });
 
+
 /**
  * @route GET /api/venues/:venueId/tables-detailed
- * @description Get all tables for a specific venue, with populated player and queue details.
+ * @description Get all tables for a specific venue, with populated player and queue details, and perGameCost from venue.
  * @access Private
  */
 router.get('/:venueId/tables-detailed', async (req, res) => {
   const { venueId } = req.params;
   try {
+    // First, find the venue to get its perGameCost
+    const venue = await Venue.findById(venueId).lean();
+    if (!venue) {
+      return res.status(404).json({ message: 'Venue not found.' });
+    }
+    const venuePerGameCost = venue.perGameCost;
+
+    // Then, fetch tables for that venue
     const tables = await Table.find({ venueId }).lean(); // Fetch tables, use lean for performance
 
-    // Populate player and queue details for each table
+    // Populate player and queue details for each table AND add perGameCost
     const populatedTables = await Promise.all(
       tables.map(async (table) => {
         const populatedQueue = await populateQueueWithUserDetails(table.queue);
         const tableWithQueue = { ...table, queue: populatedQueue };
         const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
-        return fullyPopulatedTable;
+        
+        // ADDED: Attach perGameCost to each table object
+        return { ...fullyPopulatedTable, perGameCost: venuePerGameCost };
       })
     );
 

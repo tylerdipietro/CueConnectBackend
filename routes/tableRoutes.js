@@ -647,49 +647,64 @@ router.post('/:tableId/clear-queue', async (req, res) => {
 router.post('/:tableId/pay-with-tokens', async (req, res) => {
   const { tableId } = req.params;
   const { cost } = req.body;
-  const userId = req.user.uid;
+  const userId = req.user.uid; // User ID from auth token
   const io = getSocketIO();
 
+  console.log(`[PAY_DEBUG] Attempting to process payment for userId: ${userId} on tableId: ${tableId}`);
+  console.log(`[PAY_DEBUG] Cost received from frontend: ${cost}`);
+
   try {
-    // 1. Find the user and table
+    // 1. Find the user
+    console.log(`[PAY_DEBUG] Querying User collection for firebaseUid: ${userId}`);
     const user = await User.findOne({ firebaseUid: userId });
-    const table = await Table.findById(tableId).populate('venueId'); // Populate venue to get perGameCost
 
     if (!user) {
+      console.error(`[PAY_ERROR] User not found in DB for firebaseUid: ${userId}`);
       return res.status(404).json({ message: 'User not found.' });
     }
+    console.log(`[PAY_DEBUG] User found: ${user.email}, current balance: ${user.tokenBalance}`);
+
+    // 2. Find the table and populate venue to get perGameCost
+    const table = await Table.findById(tableId).populate('venueId');
+
     if (!table) {
+      console.error(`[PAY_ERROR] Table not found for tableId: ${tableId}`);
       return res.status(404).json({ message: 'Table not found.' });
     }
+    if (!table.venueId) {
+      console.error(`[PAY_ERROR] Venue not populated for tableId: ${tableId}. Check Table model populate path.`);
+      return res.status(500).json({ message: 'Table\'s venue information is missing.' });
+    }
 
-    // 2. Verify cost matches venue's perGameCost
+    // 3. Verify cost matches venue's perGameCost
     const expectedCost = table.venueId.perGameCost;
+    console.log(`[PAY_DEBUG] Venue perGameCost: ${expectedCost}`);
     if (cost !== expectedCost) {
+      console.warn(`[PAY_WARN] Mismatch in table cost. Expected ${expectedCost}, received ${cost}.`);
       return res.status(400).json({ message: `Mismatch in table cost. Expected ${expectedCost}, received ${cost}.` });
     }
 
-    // 3. Check token balance
+    // 4. Check token balance
     if (user.tokenBalance < cost) {
+      console.warn(`[PAY_WARN] Insufficient token balance for user ${userId}. Balance: ${user.tokenBalance}, Cost: ${cost}`);
       return res.status(400).json({ message: 'Insufficient token balance.' });
     }
 
-    // 4. Deduct tokens
+    // 5. Deduct tokens
     user.tokenBalance -= cost;
     await user.save();
+    console.log(`[PAY_DEBUG] Tokens deducted. New balance for ${userId}: ${user.tokenBalance}`);
 
-    // 5. Emit token balance update to user (ONLY this update)
+    // 6. Emit token balance update to user (ONLY this update)
     io.to(userId).emit('tokenBalanceUpdate', { newBalance: user.tokenBalance });
-
-    // IMPORTANT: No changes to table status or currentPlayers here.
-    // No tableStatusUpdate emitted for the venue room.
+    console.log(`[PAY_DEBUG] Emitted tokenBalanceUpdate to user ${userId}`);
 
     res.status(200).json({ message: `Successfully paid ${cost} tokens for Table ${table.tableNumber}. Your new balance is ${user.tokenBalance} tokens.`, newBalance: user.tokenBalance });
 
   } catch (error) {
-    console.error('Error paying with tokens:', error);
+    console.error(`[PAY_ERROR] Server error processing token payment for userId ${userId}:`, error);
     res.status(500).json({ message: 'Server error processing token payment.', error: error.message });
   }
 });
-
 
 module.exports = router;
