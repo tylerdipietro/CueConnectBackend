@@ -146,7 +146,6 @@ router.get('/:venueId', async (req, res) => {
   }
 });
 
-
 /**
  * @route GET /api/venues/:venueId/tables-detailed
  * @description Get all tables for a specific venue, with populated player and queue details, and perGameCost from venue.
@@ -155,25 +154,32 @@ router.get('/:venueId', async (req, res) => {
 router.get('/:venueId/tables-detailed', async (req, res) => {
   const { venueId } = req.params;
   try {
-    // First, find the venue to get its perGameCost
+    // 1. First, find the venue to get its perGameCost
+    // Use .lean() here as we only need the data, not a full Mongoose document for the venue.
     const venue = await Venue.findById(venueId).lean();
     if (!venue) {
+      console.error(`[VENUE_ROUTES] Venue not found for ID: ${venueId}`);
       return res.status(404).json({ message: 'Venue not found.' });
     }
-    const venuePerGameCost = venue.perGameCost;
+    // Ensure perGameCost exists and is a number, default to 10 if not.
+    const venuePerGameCost = typeof venue.perGameCost === 'number' ? venue.perGameCost : 10;
+    console.log(`[VENUE_ROUTES] Fetched venue ${venue.name} (${venueId}), perGameCost: ${venuePerGameCost}`);
 
-    // Then, fetch tables for that venue
+    // 2. Then, fetch tables for that venue
     const tables = await Table.find({ venueId }).lean(); // Fetch tables, use lean for performance
+    console.log(`[VENUE_ROUTES] Found ${tables.length} tables for venue ${venueId}`);
 
-    // Populate player and queue details for each table AND add perGameCost
+    // 3. Populate player and queue details for each table AND add perGameCost
     const populatedTables = await Promise.all(
       tables.map(async (table) => {
         const populatedQueue = await populateQueueWithUserDetails(table.queue);
         const tableWithQueue = { ...table, queue: populatedQueue };
         const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
         
-        // ADDED: Attach perGameCost to each table object
-        return { ...fullyPopulatedTable, perGameCost: venuePerGameCost };
+        // CRITICAL: Attach perGameCost to each table object here
+        const finalTable = { ...fullyPopulatedTable, perGameCost: venuePerGameCost };
+        console.log(`[VENUE_ROUTES] Table ${finalTable.tableNumber} now has perGameCost: ${finalTable.perGameCost}`);
+        return finalTable;
       })
     );
 
@@ -183,6 +189,7 @@ router.get('/:venueId/tables-detailed', async (req, res) => {
     res.status(500).json({ message: 'Server error fetching detailed tables.', error: error.message });
   }
 });
+
 
 
 /**
