@@ -1,69 +1,53 @@
 // middleware/authMiddleware.js
-const admin = require('firebase-admin'); // Firebase Admin SDK is initialized via config/index.js
-const User = require('../models/User'); // Ensure your User model is correctly imported
+const admin = require('firebase-admin');
+const User = require('../models/User'); // Assuming User model is needed to check isAdmin etc.
 
-/**
- * Middleware to verify Firebase ID token and attach user data to req.
- * It also ensures a corresponding user document exists in MongoDB, creating one if necessary.
- */
-const verifyFirebaseToken = async (req, res, next) => {
-  let idToken;
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
-    idToken = req.headers.authorization.split(' ')[1];
-  }
+const authMiddleware = async (req, res, next) => {
+  const idToken = req.headers.authorization?.split('Bearer ')[1];
 
   if (!idToken) {
-    console.warn('[AuthMiddleware] No ID token provided in Authorization header.');
-    return res.status(401).json({ message: 'Unauthorized: No token provided.' });
+    console.warn('[AuthMiddleware] No ID token provided.');
+    return res.status(401).json({ message: 'No authentication token provided.' });
   }
 
   try {
     const decodedToken = await admin.auth().verifyIdToken(idToken);
-    console.log(`[AuthMiddleware] Firebase token verified for UID: ${decodedToken.uid}. Email: ${decodedToken.email}`);
+    req.user = decodedToken; // Attach decoded Firebase user to request
 
-    // Find or create user in MongoDB using _id as the Firebase UID
-    let user = await User.findById(decodedToken.uid);
-    console.log(`[AuthMiddleware] MongoDB user lookup for ${decodedToken.uid}: ${user ? 'Found' : 'Not Found'}`);
+    // Fetch user profile from MongoDB to get custom claims like isAdmin, tokenBalance
+    const userProfile = await User.findById(decodedToken.uid);
 
-    if (!user) {
-      console.log(`[AuthMiddleware] Creating new MongoDB user for Firebase UID ${decodedToken.uid}...`);
-      user = new User({
+    if (userProfile) {
+      req.user.isAdmin = userProfile.isAdmin;
+      req.user.tokenBalance = userProfile.tokenBalance;
+      req.user.stripeCustomerId = userProfile.stripeCustomerId; // Attach Stripe Customer ID
+      console.log(`[AuthMiddleware] User ${decodedToken.uid} authenticated. isAdmin: ${userProfile.isAdmin}, tokenBalance: ${userProfile.tokenBalance}`);
+    } else {
+      // If user doesn't exist in MongoDB but authenticated with Firebase,
+      // create a basic profile for them. This handles new sign-ups.
+      console.log(`[AuthMiddleware] User ${decodedToken.uid} not found in MongoDB. Creating new profile.`);
+      const newUser = new User({
         _id: decodedToken.uid, // Use Firebase UID as MongoDB _id
         email: decodedToken.email,
-        displayName: decodedToken.name || decodedToken.email.split('@')[0],
-        photoURL: decodedToken.picture || null,
-        isAdmin: false,
-        tokenBalance: 0,
-        fcmTokens: [],
-        stripeCustomerId: null, // Initialize as null
+        displayName: decodedToken.name || decodedToken.email,
+        isAdmin: false, // Default to not admin
+        tokenBalance: 0, // Default token balance
       });
-      await user.save();
-      console.log(`[AuthMiddleware] New MongoDB user created and saved for UID: ${decodedToken.uid}`);
+      await newUser.save();
+      req.user.isAdmin = newUser.isAdmin;
+      req.user.tokenBalance = newUser.tokenBalance;
+      req.user.stripeCustomerId = newUser.stripeCustomerId;
+      console.log(`[AuthMiddleware] New user profile created for ${decodedToken.uid}.`);
     }
 
-    // Attach the MongoDB user document's data to the request object
-    req.user = {
-      uid: user._id, // Firebase UID from MongoDB _id
-      email: user.email,
-      displayName: user.displayName,
-      photoURL: user.photoURL,
-      isAdmin: user.isAdmin,
-      tokenBalance: user.tokenBalance,
-      stripeCustomerId: user.stripeCustomerId,
-      idToken: idToken, // Keep the ID token for potential re-use
-    };
-    console.log(`[AuthMiddleware] req.user populated for UID: ${req.user.uid}. Token Balance: ${req.user.tokenBalance}. Stripe Customer ID: ${req.user.stripeCustomerId}`);
-    next();
-
+    next(); // Proceed to the next middleware/route handler
   } catch (error) {
-    console.error('[AuthMiddleware] CRITICAL ERROR: Failed to verify Firebase token or process user:', error.message);
+    console.error('[AuthMiddleware Error] Token verification failed:', error.message);
     if (error.code === 'auth/id-token-expired') {
-      return res.status(401).json({ message: 'Unauthorized: Token expired. Please re-authenticate.' });
-    } else if (error.code === 'auth/argument-error' || error.code === 'auth/invalid-id-token') {
-      return res.status(401).json({ message: 'Unauthorized: Invalid token provided.' });
+      return res.status(401).json({ message: 'Authentication token expired. Please re-authenticate.' });
     }
-    return res.status(401).json({ message: 'Unauthorized: Invalid or expired token or user data issue.' });
+    return res.status(401).json({ message: 'Invalid authentication token.' });
   }
 };
 
-module.exports = { verifyFirebaseToken };
+module.exports = authMiddleware; // Export the middleware function directly
