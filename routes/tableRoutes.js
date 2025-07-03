@@ -655,11 +655,12 @@ router.post('/:tableId/pay-with-tokens', async (req, res) => {
 
   try {
     // 1. Find the user
-    console.log(`[PAY_DEBUG] Querying User collection for firebaseUid: ${userId}`);
-    const user = await User.findOne({ firebaseUid: userId });
+    // MODIFIED: Use findById or findOne({ _id: userId }) since Firebase UID is stored in _id
+    console.log(`[PAY_DEBUG] Querying User collection for _id (Firebase UID): ${userId}`);
+    const user = await User.findById(userId); // CORRECTED: Query by _id
 
     if (!user) {
-      console.error(`[PAY_ERROR] User not found in DB for firebaseUid: ${userId}`);
+      console.error(`[PAY_ERROR] User not found in DB for _id (Firebase UID): ${userId}`);
       return res.status(404).json({ message: 'User not found.' });
     }
     console.log(`[PAY_DEBUG] User found: ${user.email}, current balance: ${user.tokenBalance}`);
@@ -679,9 +680,10 @@ router.post('/:tableId/pay-with-tokens', async (req, res) => {
     // 3. Verify cost matches venue's perGameCost
     const expectedCost = table.venueId.perGameCost;
     console.log(`[PAY_DEBUG] Venue perGameCost: ${expectedCost}`);
-    if (cost !== expectedCost) {
-      console.warn(`[PAY_WARN] Mismatch in table cost. Expected ${expectedCost}, received ${cost}.`);
-      return res.status(400).json({ message: `Mismatch in table cost. Expected ${expectedCost}, received ${cost}.` });
+    // Also add a check for `cost` being a number, as it could be undefined if frontend didn't send it
+    if (typeof cost !== 'number' || isNaN(cost) || cost !== expectedCost) {
+      console.warn(`[PAY_WARN] Mismatch or invalid cost. Expected ${expectedCost}, received ${cost}.`);
+      return res.status(400).json({ message: `Invalid or mismatching table cost. Expected ${expectedCost}.` });
     }
 
     // 4. Check token balance
@@ -706,5 +708,4 @@ router.post('/:tableId/pay-with-tokens', async (req, res) => {
     res.status(500).json({ message: 'Server error processing token payment.', error: error.message });
   }
 });
-
 module.exports = router;
