@@ -59,9 +59,8 @@ router.put('/:id', async (req, res) => {
     }
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(updatedTableDoc._id);
-    // CRITICAL FIX: Use updatedTableForSocket.venueId._id to get the actual ID
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id.toString(); // <--- FIX IS HERE
+      const venueRoomId = updatedTableForSocket.venueId._id.toString();
       console.log(`[TABLE_ROUTE_PUT] Attempting to emit tableStatusUpdate for table ${id} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('tableStatusUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_PUT] Emitted tableStatusUpdate for table ${id} to room: ${venueRoomId}.`);
@@ -124,9 +123,8 @@ router.post('/:tableId/join-table', async (req, res) => {
     await table.save();
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
-    // CRITICAL FIX: Use updatedTableForSocket.venueId._id to get the actual ID
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id.toString(); // <--- FIX IS HERE
+      const venueRoomId = updatedTableForSocket.venueId._id.toString();
       console.log(`[TABLE_ROUTE_JOIN] Attempting to emit tableStatusUpdate for table ${tableId} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('tableStatusUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_JOIN] Emitted tableStatusUpdate for table ${tableId} to room: ${venueRoomId}.`);
@@ -167,9 +165,8 @@ router.post('/:tableId/join-queue', async (req, res) => {
     await table.save();
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
-    // CRITICAL FIX: Use updatedTableForSocket.venueId._id to get the actual ID
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id.toString(); // <--- FIX IS HERE
+      const venueRoomId = updatedTableForSocket.venueId._id.toString();
       console.log(`[TABLE_ROUTE_JOIN_QUEUE] Attempting to emit queueUpdate for table ${tableId} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('queueUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_JOIN_QUEUE] Emitted queueUpdate for table ${tableId} to room: ${venueRoomId}.`);
@@ -213,9 +210,8 @@ router.post('/:tableId/leave-queue', async (req, res) => {
     await table.save();
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
-    // CRITICAL FIX: Use updatedTableForSocket.venueId._id to get the actual ID
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id.toString(); // <--- FIX IS HERE
+      const venueRoomId = updatedTableForSocket.venueId._id.toString();
       console.log(`[TABLE_ROUTE_LEAVE_QUEUE] Attempting to emit queueUpdate for table ${tableId} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('queueUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_LEAVE_QUEUE] Emitted queueUpdate for table ${tableId} to room: ${venueRoomId}.`);
@@ -256,9 +252,8 @@ router.post('/:tableId/clear-queue', async (req, res) => {
     await table.save();
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
-    // CRITICAL FIX: Use updatedTableForSocket.venueId._id to get the actual ID
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id.toString(); // <--- FIX IS HERE
+      const venueRoomId = updatedTableForSocket.venueId._id.toString();
       console.log(`[TABLE_ROUTE_CLEAR_QUEUE] Attempting to emit queueUpdate for table ${tableId} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('queueUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_CLEAR_QUEUE] Emitted queueUpdate for table ${tableId} to room: ${venueRoomId}.`);
@@ -286,7 +281,8 @@ router.post('/:tableId/claim-win', async (req, res) => {
   const io = getSocketIO();
 
   try {
-    const table = await Table.findById(tableId);
+    // CRITICAL FIX: Populate venueId to access venueName for FCM notification
+    const table = await Table.findById(tableId).populate('venueId');
     if (!table) {
       return res.status(404).json({ message: 'Table not found.' });
     }
@@ -306,12 +302,15 @@ router.post('/:tableId/claim-win', async (req, res) => {
     table.status = 'awaiting_confirmation';
     await table.save();
 
+    // FCM Notification to Opponent
     const opponentUser = await User.findById(opponentId);
     if (opponentUser && opponentUser.fcmToken) {
+      // Safely get venue name from populated venueId
+      const venueNameForNotification = table.venueId ? table.venueId.name : 'Unknown Venue';
       const message = {
         notification: {
           title: 'Win Claimed!',
-          body: `${winnerDisplayName} claims victory on Table ${table.tableNumber} at ${table.venueName}. Confirm or dispute?`,
+          body: `${winnerDisplayName} claims victory on Table ${table.tableNumber} at ${venueNameForNotification}. Confirm or dispute?`,
         },
         data: {
           type: 'win_confirmation',
@@ -327,13 +326,23 @@ router.post('/:tableId/claim-win', async (req, res) => {
         .then(() => console.log(`FCM: Win claim notification sent to ${opponentUser.email}`))
         .catch(error => console.error(`FCM: Error sending win claim notification to ${opponentUser.email}:`, error));
     } else {
-      console.log(`FCM: Opponent ${opponentId} has no FCM token or user not found.`);
+      console.log(`FCM: Opponent ${opponentId} has no FCM token or user not found. OpponentUser exists: ${!!opponentUser}, FCM Token exists: ${!!(opponentUser && opponentUser.fcmToken)}`);
     }
 
+    // Socket.IO event to the WINNER (claiming player) to show their modal immediately
+    io.to(winnerId).emit('winClaimedNotification', {
+        tableId: table._id.toString(),
+        tableNumber: table.tableNumber,
+        winnerId: winnerId,
+        winnerDisplayName: winnerDisplayName,
+        message: `You claimed victory on Table ${table.tableNumber}. Waiting for opponent's confirmation.`
+    });
+    console.log(`[TABLE_ROUTE_CLAIM_WIN] Emitted winClaimedNotification to winner ${winnerId}.`);
+
+
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
-    // CRITICAL FIX: Use updatedTableForSocket.venueId._id to get the actual ID
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id.toString(); // <--- FIX IS HERE
+      const venueRoomId = updatedTableForSocket.venueId._id.toString();
       console.log(`[TABLE_ROUTE_CLAIM_WIN] Attempting to emit tableStatusUpdate for table ${tableId} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('tableStatusUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_CLAIM_WIN] Emitted tableStatusUpdate for table ${tableId} to room: ${venueRoomId}.`);
@@ -420,9 +429,8 @@ router.post('/:tableId/confirm-win', async (req, res) => {
     await table.save();
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
-    // CRITICAL FIX: Use updatedTableForSocket.venueId._id to get the actual ID
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id.toString(); // <--- FIX IS HERE
+      const venueRoomId = updatedTableForSocket.venueId._id.toString();
       console.log(`[TABLE_ROUTE_CONFIRM_WIN] Attempting to emit tableStatusUpdate for table ${tableId} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('tableStatusUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_CONFIRM_WIN] Emitted tableStatusUpdate for table ${tableId} to room: ${venueRoomId}.`);
@@ -487,9 +495,8 @@ router.post('/:tableId/dispute-win', async (req, res) => {
     }
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
-    // CRITICAL FIX: Use updatedTableForSocket.venueId._id to get the actual ID
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id.toString(); // <--- FIX IS HERE
+      const venueRoomId = updatedTableForSocket.venueId._id.toString();
       console.log(`[TABLE_ROUTE_DISPUTE_WIN] Attempting to emit tableStatusUpdate for table ${tableId} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('tableStatusUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_DISPUTE_WIN] Emitted tableStatusUpdate for table ${tableId} to room: ${venueRoomId}.`);
@@ -564,9 +571,8 @@ router.post('/:tableId/remove-player', async (req, res) => {
     await table.save();
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
-    // CRITICAL FIX: Use updatedTableForSocket.venueId._id to get the actual ID
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id.toString(); // <--- FIX IS HERE
+      const venueRoomId = updatedTableForSocket.venueId._id.toString();
       console.log(`[TABLE_ROUTE_REMOVE_PLAYER] Attempting to emit tableStatusUpdate for table ${tableId} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('tableStatusUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_REMOVE_PLAYER] Emitted tableStatusUpdate for table ${tableId} to room: ${venueRoomId}.`);
