@@ -1,9 +1,7 @@
-// routes/userRoutes.js
 const express = require('express');
 const router = express.Router();
-const User = require('../models/User'); // User model
-const { getSocketIO } = require('../services/socketService'); // Import Socket.IO instance (if used in other user-related routes)
-const authMiddleware = require('../middleware/authMiddleware'); // Assuming authMiddleware is applied globally or here
+const User = require('../models/User');
+const authMiddleware = require('../middleware/authMiddleware'); // Assuming this is your auth middleware
 
 // Apply authMiddleware to all routes in this router
 router.use(authMiddleware);
@@ -53,7 +51,7 @@ router.get('/profile', async (req, res) => {
  * @access Private (requires Firebase auth token)
  */
 router.post('/update-fcm-token', async (req, res) => {
-  const { fcmToken } = req.body;
+  const { fcmToken } = req.body; // Expecting a single FCM token string
   const userId = req.user.uid;
 
   if (!fcmToken) {
@@ -76,6 +74,7 @@ router.post('/update-fcm-token', async (req, res) => {
       console.log(`[UserRoutes:/update-fcm-token] Initialized fcmTokens array for user ${userId}.`);
     }
 
+    // Add token only if it's not already in the array
     if (!user.fcmTokens.includes(fcmToken)) {
       user.fcmTokens.push(fcmToken);
       await user.save();

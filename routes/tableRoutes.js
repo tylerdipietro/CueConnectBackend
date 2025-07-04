@@ -1,5 +1,3 @@
-// routes/tableRoutes.js
-
 const express = require('express');
 const router = express.Router();
 const Table = require('../models/Table');
@@ -113,7 +111,7 @@ router.post('/:tableId/join-table', async (req, res) => {
         return res.status(400).json({ message: 'Table is currently occupied by two players. Please join the queue.' });
       }
     } else if (table.status === 'in_play' && !table.currentPlayers.player2Id) {
-      table.currentPlayers.player2Id = userId;
+      table.currentPlayers.player22Id = userId;
       message = `You have joined Table ${table.tableNumber} as Player 2. Game started!`;
       playerSlot = 'player2';
     } else {
@@ -305,7 +303,7 @@ router.post('/:tableId/claim-win', async (req, res) => {
     const opponentUser = await User.findById(opponentId);
     // Defensive check for admin instance
     const admin = req.app.get('admin'); // Get the admin instance
-    if (opponentUser && opponentUser.fcmTokens && opponentUser.fcmTokens.length > 0) {
+    if (opponentUser && opponentUser.fcmTokens && opponentUser.fcmTokens.length > 0) { // Check fcmTokens array
       if (admin) { // Check if admin instance is available
         const venueNameForNotification = table.venueId ? table.venueId.name : 'Unknown Venue';
         const message = {
@@ -321,8 +319,9 @@ router.post('/:tableId/claim-win', async (req, res) => {
             winnerDisplayName: winnerDisplayName,
             sessionId: table.currentSessionId ? table.currentSessionId.toString() : '',
           },
-          tokens: opponentUser.fcmTokens,
+          tokens: opponentUser.fcmTokens, // Use tokens (plural) for multiple recipients
         };
+        // Use sendEachForMulticast for multiple tokens
         admin.messaging().sendEachForMulticast(message)
           .then((response) => {
             console.log(`FCM: Win claim notification sent to opponent ${opponentUser.email}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
@@ -420,7 +419,7 @@ router.post('/:tableId/confirm-win', async (req, res) => {
       const nextPlayerUser = await User.findById(nextPlayerId);
       // Defensive check for admin instance
       const admin = req.app.get('admin'); // Get the admin instance
-      if (nextPlayerUser && nextPlayerUser.fcmTokens && nextPlayerUser.fcmTokens.length > 0) {
+      if (nextPlayerUser && nextPlayerUser.fcmTokens && nextPlayerUser.fcmTokens.length > 0) { // Check fcmTokens array
         if (admin) { // Check if admin instance is available
           const message = {
             notification: {
@@ -432,7 +431,7 @@ router.post('/:tableId/confirm-win', async (req, res) => {
               tableId: tableId.toString(),
               tableNumber: table.tableNumber.toString(),
             },
-            tokens: nextPlayerUser.fcmTokens,
+            tokens: nextPlayerUser.fcmTokens, // Use tokens (plural)
           };
           admin.messaging().sendEachForMulticast(message)
             .then((response) => {
@@ -509,9 +508,9 @@ router.post('/:tableId/dispute-win', async (req, res) => {
 
     // Defensive check for admin instance
     const admin = req.app.get('admin'); // Get the admin instance
-    if (player1 && player1.fcmTokens && player1.fcmTokens.length > 0) {
+    if (player1 && player1.fcmTokens && player1.fcmTokens.length > 0) { // Check fcmTokens array
       if (admin) { // Check if admin instance is available
-        req.app.get('admin').messaging().sendEachForMulticast({
+        admin.messaging().sendEachForMulticast({
           notification: { title: notificationTitle, body: notificationBody },
           data: { type: 'win_disputed', tableId: tableId.toString(), tableNumber: table.tableNumber.toString() },
           tokens: player1.fcmTokens,
@@ -520,9 +519,9 @@ router.post('/:tableId/dispute-win', async (req, res) => {
         console.error('[TABLE_ROUTE_DISPUTE_WIN] Firebase Admin SDK instance not found on app object. Cannot send FCM notification to player1.');
       }
     }
-    if (player2 && player2.fcmTokens && player2.fcmTokens.length > 0) {
+    if (player2 && player2.fcmTokens && player2.fcmTokens.length > 0) { // Check fcmTokens array
       if (admin) { // Check if admin instance is available
-        req.app.get('admin').messaging().sendEachForMulticast({
+        admin.messaging().sendEachForMulticast({
           notification: { title: notificationTitle, body: notificationBody },
           data: { type: 'win_disputed', tableId: tableId.toString(), tableNumber: table.tableNumber.toString() },
           tokens: player2.fcmTokens,
@@ -534,7 +533,7 @@ router.post('/:tableId/dispute-win', async (req, res) => {
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id._id.toString();
+      const venueRoomId = updatedTableForSocket.venueId._id.toString();
       console.log(`[TABLE_ROUTE_DISPUTE_WIN] Attempting to emit tableStatusUpdate for table ${tableId} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('tableStatusUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_DISPUTE_WIN] Emitted tableStatusUpdate for table ${tableId} to room: ${venueRoomId}.`);
@@ -595,13 +594,13 @@ router.post('/:tableId/remove-player', async (req, res) => {
             table.currentPlayers.player1Id = table.queue.shift();
             table.status = 'available';
         } else if (table.queue.length > 0 && !table.currentPlayers.player2Id) {
-            table.currentPlayers.player2Id = table.queue.shift();
+            table.currentPlayers.player22Id = table.queue.shift();
             table.status = 'in_play';
-        } else if (table.currentPlayers.player1Id && !table.currentPlayers.player2Id) {
+        } else if (table.currentPlayers.player1Id && !table.currentPlayers.player22Id) {
             table.status = 'available';
-        } else if (!table.currentPlayers.player1Id && table.currentPlayers.player2Id) {
-            table.currentPlayers.player1Id = table.currentPlayers.player2Id;
-            table.currentPlayers.player2Id = null;
+        } else if (!table.currentPlayers.player1Id && table.currentPlayers.player22Id) {
+            table.currentPlayers.player1Id = table.currentPlayers.player22Id;
+            table.currentPlayers.player22Id = null;
             table.status = 'available';
         }
     }

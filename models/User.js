@@ -2,44 +2,28 @@
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
-  _id: {
-    type: String, // Firebase UID
-    required: true,
-  },
-  email: {
-    type: String,
-    required: true,
-    unique: true,
-    lowercase: true,
-    trim: true,
-  },
-  displayName: {
-    type: String,
-    required: false,
-    trim: true,
-  },
-  isAdmin: {
-    type: Boolean,
-    default: false,
-  },
-  tokenBalance: {
-    type: Number,
-    default: 0,
-    min: 0,
-  },
+  _id: String, // Firebase UID will be used as primary key
+  displayName: String,
+  email: String,
+  tokenBalance: { type: Number, default: 0 },
+  fcmTokens: [String], // Array to store FCM device tokens for push notifications
+  isAdmin: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
+  // NEW: Field to store Stripe Customer ID
   stripeCustomerId: {
     type: String,
-    required: false,
-    unique: true,
-    sparse: true,
+    unique: true, // Ensures each Stripe Customer ID is unique in your database
+    sparse: true, // Allows multiple documents to have a null/undefined value for this field
+                 // This is important because not all users will have a Stripe Customer ID immediately
+    index: true, // Adds an index for faster lookups if you query by stripeCustomerId
   },
-  // CRITICAL FIX: Changed from singular 'fcmToken' String to plural 'fcmTokens' Array of Strings
-  fcmTokens: { // Firebase Cloud Messaging tokens for push notifications
-    type: [String], // Define as an array of Strings
-    default: [],    // Initialize as an empty array
-  },
-}, { timestamps: true });
+});
 
-const User = mongoose.model('User', userSchema);
+// Pre-save hook to update the 'updatedAt' timestamp
+userSchema.pre('save', function(next) {
+  this.updatedAt = new Date();
+  next();
+});
 
-module.exports = User;
+module.exports = mongoose.model('User', userSchema);
