@@ -2,7 +2,7 @@
 
 const socketIo = require('socket.io');
 const Table = require('../models/Table'); // Import Table model
-const { getPopulatedTableWithPerGameCost } = require('../routes/tableRoutes'); // Import the helper
+const { getPopulatedTableWithPerGameCost } = require('./tableHelpers'); // NEW: Import from the new helper file
 const { populateTablePlayersDetails, populateQueueWithUserDetails } = require('./gameService'); // Assuming this path is correct
 
 let io;
@@ -29,7 +29,6 @@ function initializeSocketIO(server) {
       console.log(`Socket ${socket.id} joined venue room: ${venueId}`);
       socket.join(venueId);
 
-      // CRITICAL: Send initial state of tables in this venue to the newly joined socket
       try {
         const tablesInVenue = await Table.find({ venueId });
         const populatedTables = await Promise.all(

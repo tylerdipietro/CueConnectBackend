@@ -7,6 +7,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const { getSocketIO } = require('../services/socketService');
 // Import gameService functions for populating table details
 const { populateTablePlayersDetails, populateQueueWithUserDetails } = require('../services/gameService');
+const { getPopulatedTableWithPerGameCost } = require('../services/tableHelpers'); 
 
 
 // Apply authMiddleware to all routes in this router
@@ -154,42 +155,38 @@ router.get('/:venueId', async (req, res) => {
 router.get('/:venueId/tables-detailed', async (req, res) => {
   const { venueId } = req.params;
   try {
-    // 1. First, find the venue to get its perGameCost
-    // Use .lean() here as we only need the data, not a full Mongoose document for the venue.
+    // First, find the venue to get its perGameCost (this part is still explicit for initial fetch)
     const venue = await Venue.findById(venueId).lean();
     if (!venue) {
       console.error(`[VENUE_ROUTES] Venue not found for ID: ${venueId}`);
       return res.status(404).json({ message: 'Venue not found.' });
     }
-    // Ensure perGameCost exists and is a number, default to 10 if not.
     const venuePerGameCost = typeof venue.perGameCost === 'number' ? venue.perGameCost : 10;
     console.log(`[VENUE_ROUTES] Fetched venue ${venue.name} (${venueId}), perGameCost: ${venuePerGameCost}`);
 
-    // 2. Then, fetch tables for that venue
-    const tables = await Table.find({ venueId }).lean(); // Fetch tables, use lean for performance
+    // Then, fetch tables for that venue
+    const tables = await Table.find({ venueId }).lean();
     console.log(`[VENUE_ROUTES] Found ${tables.length} tables for venue ${venueId}`);
 
-    // 3. Populate player and queue details for each table AND add perGameCost
+    // Populate player and queue details for each table AND add perGameCost
     const populatedTables = await Promise.all(
       tables.map(async (table) => {
-        const populatedQueue = await populateQueueWithUserDetails(table.queue);
-        const tableWithQueue = { ...table, queue: populatedQueue };
-        const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
-        
-        // CRITICAL: Attach perGameCost to each table object here
-        const finalTable = { ...fullyPopulatedTable, perGameCost: venuePerGameCost };
-        console.log(`[VENUE_ROUTES] Table ${finalTable.tableNumber} now has perGameCost: ${finalTable.perGameCost}`);
-        return finalTable;
+        // Use the helper function here too for consistency
+        const fullyPopulatedTable = await getPopulatedTableWithPerGameCost(table._id);
+        // Ensure perGameCost is correctly attached, even if helper returned null or missing cost
+        return fullyPopulatedTable ? { ...fullyPopulatedTable, perGameCost: fullyPopulatedTable.perGameCost || venuePerGameCost } : null;
       })
     );
 
-    res.json(populatedTables);
+    // Filter out any nulls if a table couldn't be populated
+    const validPopulatedTables = populatedTables.filter(t => t !== null);
+
+    res.json(validPopulatedTables);
   } catch (error) {
     console.error('Error fetching detailed tables for venue:', error);
     res.status(500).json({ message: 'Server error fetching detailed tables.', error: error.message });
   }
 });
-
 
 
 /**

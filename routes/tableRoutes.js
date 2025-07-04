@@ -4,55 +4,17 @@ const express = require('express');
 const router = express.Router();
 const Table = require('../models/Table');
 const User = require('../models/User');
-const Venue = require('../models/Venue');
+const Venue = require('../models/Venue'); // Still needed for some direct populate calls (e.g., confirm-win)
 const authMiddleware = require('../middleware/authMiddleware');
-const { getSocketIO } = require('../services/socketService');
-const { populateTablePlayersDetails, populateQueueWithUserDetails } = require('../services/gameService');
+const { getSocketIO } = require('../services/socketService'); // CORRECTED: This import should be fine
+const { getPopulatedTableWithPerGameCost } = require('../services/tableHelpers'); // NEW: Import from the new helper file
+const { populateTablePlayersDetails, populateQueueWithUserDetails } = require('../services/gameService'); // Still needed for helper function
 
 
 // Apply authMiddleware to all routes in this router
 router.use(authMiddleware);
 
-// Helper function to get a fully populated table object with perGameCost
-// This avoids duplicating the logic in every route handler
-async function getPopulatedTableWithPerGameCost(tableId) {
-  try {
-    console.log(`[SOCKET_HELPER] Fetching table ${tableId} for population...`);
-    const table = await Table.findById(tableId).populate('venueId');
-
-    if (!table) {
-      console.warn(`[SOCKET_HELPER] Table ${tableId} not found.`);
-      return null;
-    }
-
-    if (!table.venueId) {
-      console.error(`[SOCKET_HELPER] Venue not populated for table ${tableId}. Cannot get perGameCost.`);
-      const populatedQueue = await populateQueueWithUserDetails(table.queue);
-      const tableWithQueue = { ...table.toObject(), queue: populatedQueue };
-      const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
-      return { ...fullyPopulatedTable, perGameCost: null }; // Indicate missing cost
-    }
-
-    console.log(`[SOCKET_HELPER] Table ${tableId} venueId populated: ${table.venueId._id}`);
-    const venuePerGameCost = typeof table.venueId.perGameCost === 'number' ? table.venueId.perGameCost : 10;
-    console.log(`[SOCKET_HELPER] Table ${tableId} perGameCost from venue: ${venuePerGameCost}`);
-
-    const populatedQueue = await populateQueueWithUserDetails(table.queue);
-    const tableObject = table.toObject();
-    const tableWithQueue = { ...tableObject, queue: populatedQueue };
-    const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
-
-    const finalTableData = { ...fullyPopulatedTable, perGameCost: venuePerGameCost };
-    console.log(`[SOCKET_HELPER] Final populated table data for ${tableId} (perGameCost: ${finalTableData.perGameCost}):`, JSON.stringify(finalTableData, null, 2));
-    return finalTableData;
-  } catch (error) {
-    console.error(`[SOCKET_HELPER] Error in getPopulatedTableWithPerGameCost for table ${tableId}:`, error);
-    return null;
-  }
-}
-
-// EXPORT THE HELPER FUNCTION
-module.exports.getPopulatedTableWithPerGameCost = getPopulatedTableWithPerGameCost;
+// The getPopulatedTableWithPerGameCost helper function is now in services/tableHelpers.js
 
 
 /**
@@ -85,9 +47,13 @@ router.put('/:id', async (req, res) => {
 
   const { id } = req.params;
   const { tableNumber, esp32DeviceId } = req.body;
-  const io = getSocketIO();
+  const io = getSocketIO(); // This should now work
 
   try {
+    const updateFields = {};
+    if (tableNumber !== undefined) updateFields.tableNumber = tableNumber;
+    if (esp32DeviceId !== undefined) updateFields.esp32DeviceId = esp32DeviceId;
+
     const updatedTableDoc = await Table.findByIdAndUpdate(id, updateFields, { new: true, runValidators: true });
 
     if (!updatedTableDoc) {
@@ -278,7 +244,8 @@ router.post('/:tableId/clear-queue', async (req, res) => {
     }
 
     res.status(200).json({ message: 'Queue cleared successfully.', table: updatedTableForSocket });
-  } catch (error) {
+  }
+  catch (error) {
     console.error('Error clearing queue:', error);
     res.status(500).json({ message: 'Server error clearing queue.', error: error.message });
   }
@@ -375,7 +342,7 @@ router.post('/:tableId/confirm-win', async (req, res) => {
     }
 
     const isConfirmerOpponent = (table.currentPlayers.player1Id?.toString() === confirmerId.toString() && table.currentPlayers.player2Id?.toString() === winnerId.toString()) ||
-                                (table.currentPlayers.player2Id?.toString() === confirmerId.toString() && table.currentPlayers.player1Id?.toString() === winnerId.toString());
+                                (table.currentPlayers.player22Id?.toString() === confirmerId.toString() && table.currentPlayers.player1Id?.toString() === winnerId.toString());
 
     if (!isConfirmerOpponent) {
       return res.status(403).json({ message: 'Access denied. Only the opponent can confirm the win.' });
@@ -571,7 +538,6 @@ router.post('/:tableId/remove-player', async (req, res) => {
   }
 });
 
-// NEW ROUTE: Pay for table with tokens (MODIFIED TO ONLY DEDUCT TOKENS)
 /**
  * @route POST /api/tables/:tableId/pay-with-tokens
  * @description Deduct tokens from user's balance for a table. Does NOT affect table status or player assignment.
@@ -634,5 +600,4 @@ router.post('/:tableId/pay-with-tokens', async (req, res) => {
   }
 });
 
-// Export the router as default
 module.exports = router;
