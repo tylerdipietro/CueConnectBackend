@@ -281,8 +281,7 @@ router.post('/:tableId/claim-win', async (req, res) => {
   const io = getSocketIO();
 
   try {
-    // CRITICAL FIX: Populate venueId to access venueName for FCM notification
-    const table = await Table.findById(tableId).populate('venueId');
+    const table = await Table.findById(tableId).populate('venueId'); // Ensure venueId is populated for FCM
     if (!table) {
       return res.status(404).json({ message: 'Table not found.' });
     }
@@ -305,7 +304,6 @@ router.post('/:tableId/claim-win', async (req, res) => {
     // FCM Notification to Opponent
     const opponentUser = await User.findById(opponentId);
     if (opponentUser && opponentUser.fcmToken) {
-      // Safely get venue name from populated venueId
       const venueNameForNotification = table.venueId ? table.venueId.name : 'Unknown Venue';
       const message = {
         notification: {
@@ -329,15 +327,15 @@ router.post('/:tableId/claim-win', async (req, res) => {
       console.log(`FCM: Opponent ${opponentId} has no FCM token or user not found. OpponentUser exists: ${!!opponentUser}, FCM Token exists: ${!!(opponentUser && opponentUser.fcmToken)}`);
     }
 
-    // Socket.IO event to the WINNER (claiming player) to show their modal immediately
-    io.to(winnerId).emit('winClaimedNotification', {
+    // Socket.IO event to the OPPONENT (player who needs to confirm)
+    io.to(opponentId).emit('winClaimedNotification', { // <--- FIX IS HERE: Emitting to opponentId
         tableId: table._id.toString(),
         tableNumber: table.tableNumber,
         winnerId: winnerId,
         winnerDisplayName: winnerDisplayName,
-        message: `You claimed victory on Table ${table.tableNumber}. Waiting for opponent's confirmation.`
+        message: `${winnerDisplayName} claims victory on Table ${table.tableNumber}. Do you confirm this win?` // Message for opponent
     });
-    console.log(`[TABLE_ROUTE_CLAIM_WIN] Emitted winClaimedNotification to winner ${winnerId}.`);
+    console.log(`[TABLE_ROUTE_CLAIM_WIN] Emitted winClaimedNotification to opponent ${opponentId}.`);
 
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
