@@ -627,7 +627,7 @@ router.post('/:tableId/remove-player', async (req, res) => {
 
 /**
  * @route POST /api/tables/:tableId/pay-with-tokens
- * @description Deduct tokens from user's balance for a table. Does NOT affect table status or player assignment.
+ * @description Deduct tokens from user's balance for a ttable. Does NOT affect table status or player assignment.
  * @access Private
  * @body {number} cost - The number of tokens to deduct (should match venue's perGameCost).
  */
