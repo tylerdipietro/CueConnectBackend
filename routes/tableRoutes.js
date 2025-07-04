@@ -111,7 +111,7 @@ router.post('/:tableId/join-table', async (req, res) => {
         return res.status(400).json({ message: 'Table is currently occupied by two players. Please join the queue.' });
       }
     } else if (table.status === 'in_play' && !table.currentPlayers.player2Id) {
-      table.currentPlayers.player22Id = userId;
+      table.currentPlayers.player2Id = userId;
       message = `You have joined Table ${table.tableNumber} as Player 2. Game started!`;
       playerSlot = 'player2';
     } else {
@@ -377,7 +377,7 @@ router.post('/:tableId/claim-win', async (req, res) => {
 router.post('/:tableId/confirm-win', async (req, res) => {
   const { tableId } = req.params;
   const { winnerId, sessionId } = req.body;
-  const confirmerId = req.user.uid;
+  const confirmerId = req.user.uid; // This is the loser confirming the win
   const io = getSocketIO();
 
   try {
@@ -390,6 +390,7 @@ router.post('/:tableId/confirm-win', async (req, res) => {
       return res.status(400).json({ message: 'Table is not awaiting win confirmation.' });
     }
 
+    // Ensure the confirmer is indeed the opponent of the winner
     const isConfirmerOpponent = (table.currentPlayers.player1Id?.toString() === confirmerId.toString() && table.currentPlayers.player2Id?.toString() === winnerId.toString()) ||
                                 (table.currentPlayers.player2Id?.toString() === confirmerId.toString() && table.currentPlayers.player1Id?.toString() === winnerId.toString());
 
@@ -397,60 +398,60 @@ router.post('/:tableId/confirm-win', async (req, res) => {
       return res.status(403).json({ message: 'Access denied. Only the opponent can confirm the win.' });
     }
 
-    const winnerUser = await User.findById(winnerId);
-    const venuePerGameCost = table.venueId ? (typeof table.venueId.perGameCost === 'number' ? table.venueId.perGameCost : 10) : 10;
-    if (winnerUser) {
-      await User.updateOne(
-        { _id: winnerId },
-        { $inc: { tokenBalance: venuePerGameCost } }
-      );
-      console.log(`Tokens awarded: ${venuePerGameCost} to ${winnerUser.email}`);
-      io.to(winnerId).emit('tokenBalanceUpdate', { newBalance: winnerUser.tokenBalance + venuePerGameCost });
+    // --- CRITICAL FIX: Update currentPlayers logic ---
+    // The winner remains in player1Id slot, the loser's slot (confirmerId) is cleared.
+    if (table.currentPlayers.player1Id?.toString() === winnerId.toString()) {
+      // Winner was player1, loser was player2
+      table.currentPlayers.player2Id = null; // Clear loser's slot
+      console.log(`[CONFIRM_WIN_FIX] Winner ${winnerId} remains as Player 1. Loser ${confirmerId} removed from Player 2.`);
+    } else if (table.currentPlayers.player2Id?.toString() === winnerId.toString()) {
+      // Winner was player2, loser was player1. Move winner to player1 slot.
+      table.currentPlayers.player1Id = winnerId; // Move winner to player1
+      table.currentPlayers.player2Id = null; // Clear player2 slot (which was winner's, now free)
+      console.log(`[CONFIRM_WIN_FIX] Winner ${winnerId} moved to Player 1. Loser ${confirmerId} removed from Player 1.`);
+    } else {
+      // This case should ideally not be reached if isConfirmerOpponent check passed
+      console.warn(`[CONFIRM_WIN_FIX] Unexpected player configuration during win confirmation for table ${tableId}.`);
+      table.currentPlayers = { player1Id: null, player2Id: null }; // Fallback to clear both
     }
+    table.currentSessionId = undefined; // Clear the session ID
 
-    table.currentPlayers = { player1Id: null, player2Id: null };
-    table.currentSessionId = undefined;
-
-    if (table.queue.length > 0) {
-      const nextPlayerId = table.queue.shift();
-      table.currentPlayers.player1Id = nextPlayerId;
-      table.status = 'available';
+    // Handle queue: If there's a next player, they take the now-empty player2 slot
+    if (table.queue.length > 0 && !table.currentPlayers.player2Id) {
+      const nextPlayerId = table.queue.shift(); // Remove from queue
+      table.currentPlayers.player2Id = nextPlayerId; // Assign to player2 slot
+      table.status = 'in_play'; // Game continues if a new player joins
+      console.log(`[CONFIRM_WIN_FIX] Next player ${nextPlayerId} from queue assigned to Player 2.`);
 
       const nextPlayerUser = await User.findById(nextPlayerId);
-      // Defensive check for admin instance
-      const admin = req.app.get('admin'); // Get the admin instance
-      if (nextPlayerUser && nextPlayerUser.fcmTokens && nextPlayerUser.fcmTokens.length > 0) { // Check fcmTokens array
-        if (admin) { // Check if admin instance is available
-          const message = {
-            notification: {
-              title: 'Your Turn!',
-              body: `It's your turn on Table ${table.tableNumber} at ${table.venueId.name}.`,
-            },
-            data: {
-              type: 'your_turn',
-              tableId: tableId.toString(),
-              tableNumber: table.tableNumber.toString(),
-            },
-            tokens: nextPlayerUser.fcmTokens, // Use tokens (plural)
-          };
-          admin.messaging().sendEachForMulticast(message)
-            .then((response) => {
-              console.log(`FCM: Next player notification sent to ${nextPlayerUser.email}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
-              if (response.failureCount > 0) {
-                response.responses.forEach((resp, idx) => {
-                  if (!resp.success) {
-                    console.error(`FCM: Failed to send to token ${nextPlayerUser.fcmTokens[idx]}: ${resp.error}`);
-                  }
-                });
-              }
-            })
-            .catch(error => console.error(`FCM: Error sending next player notification to ${nextPlayerUser.email}:`, error));
-        } else {
-          console.error('[TABLE_ROUTE_CONFIRM_WIN] Firebase Admin SDK instance not found on app object. Cannot send FCM notification.');
-        }
+      const admin = req.app.get('admin');
+      if (nextPlayerUser && nextPlayerUser.fcmTokens && nextPlayerUser.fcmTokens.length > 0 && admin) {
+        const message = {
+          notification: {
+            title: 'Your Turn!',
+            body: `It's your turn on Table ${table.tableNumber} at ${table.venueId.name}.`,
+          },
+          data: {
+            type: 'your_turn',
+            tableId: tableId.toString(),
+            tableNumber: table.tableNumber.toString(),
+          },
+          tokens: nextPlayerUser.fcmTokens,
+        };
+        admin.messaging().sendEachForMulticast(message)
+          .then((response) => {
+            console.log(`FCM: Next player notification sent to ${nextPlayerUser.email}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
+          })
+          .catch(error => console.error(`FCM: Error sending next player notification to ${nextPlayerUser.email}:`, error));
       }
-    } else {
+    } else if (table.currentPlayers.player1Id && !table.currentPlayers.player2Id) {
+      // Only winner is left, and no one in queue to fill player2 slot
+      table.status = 'available'; // Table is available for another player to join
+      console.log(`[CONFIRM_WIN_FIX] Only winner ${winnerId} remains. Table status set to 'available'.`);
+    } else if (!table.currentPlayers.player1Id && !table.currentPlayers.player2Id) {
+      // No players left after confirmation (should not happen with this logic, but as a fallback)
       table.status = 'available';
+      console.log(`[CONFIRM_WIN_FIX] No players left after confirmation. Table status set to 'available'.`);
     }
 
     await table.save();
@@ -594,13 +595,13 @@ router.post('/:tableId/remove-player', async (req, res) => {
             table.currentPlayers.player1Id = table.queue.shift();
             table.status = 'available';
         } else if (table.queue.length > 0 && !table.currentPlayers.player2Id) {
-            table.currentPlayers.player22Id = table.queue.shift();
+            table.currentPlayers.player2Id = table.queue.shift();
             table.status = 'in_play';
-        } else if (table.currentPlayers.player1Id && !table.currentPlayers.player22Id) {
+        } else if (table.currentPlayers.player1Id && !table.currentPlayers.player2Id) {
             table.status = 'available';
-        } else if (!table.currentPlayers.player1Id && table.currentPlayers.player22Id) {
-            table.currentPlayers.player1Id = table.currentPlayers.player22Id;
-            table.currentPlayers.player22Id = null;
+        } else if (!table.currentPlayers.player1Id && table.currentPlayers.player2Id) {
+            table.currentPlayers.player1Id = table.currentPlayers.player2Id;
+            table.currentPlayers.player2Id = null;
             table.status = 'available';
         }
     }
