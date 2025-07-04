@@ -4,17 +4,15 @@ const express = require('express');
 const router = express.Router();
 const Table = require('../models/Table');
 const User = require('../models/User');
-const Venue = require('../models/Venue'); // Still needed for some direct populate calls (e.g., confirm-win)
+const Venue = require('../models/Venue');
 const authMiddleware = require('../middleware/authMiddleware');
-const { getSocketIO } = require('../services/socketService'); // CORRECTED: This import should be fine
-const { getPopulatedTableWithPerGameCost } = require('../services/tableHelpers'); // NEW: Import from the new helper file
-const { populateTablePlayersDetails, populateQueueWithUserDetails } = require('../services/gameService'); // Still needed for helper function
+const { getSocketIO } = require('../services/socketService');
+const { getPopulatedTableWithPerGameCost } = require('../services/tableHelpers');
+const { populateTablePlayersDetails, populateQueueWithUserDetails } = require('../services/gameService');
 
 
 // Apply authMiddleware to all routes in this router
 router.use(authMiddleware);
-
-// The getPopulatedTableWithPerGameCost helper function is now in services/tableHelpers.js
 
 
 /**
@@ -47,7 +45,7 @@ router.put('/:id', async (req, res) => {
 
   const { id } = req.params;
   const { tableNumber, esp32DeviceId } = req.body;
-  const io = getSocketIO(); // This should now work
+  const io = getSocketIO();
 
   try {
     const updateFields = {};
@@ -62,8 +60,11 @@ router.put('/:id', async (req, res) => {
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(updatedTableDoc._id);
     if (updatedTableForSocket) {
-      console.log(`[TABLE_ROUTE_PUT] Emitting tableStatusUpdate for ${id} with perGameCost: ${updatedTableForSocket.perGameCost}`);
+      console.log(`[TABLE_ROUTE_PUT] Attempting to emit tableStatusUpdate for table ${id}. Venue: ${updatedTableForSocket.venueId}, perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
+      console.log(`[TABLE_ROUTE_PUT] Emitted tableStatusUpdate for table ${id}.`);
+    } else {
+      console.warn(`[TABLE_ROUTE_PUT] Not emitting tableStatusUpdate for ${id} because updatedTableForSocket is null.`);
     }
 
     res.status(200).json(updatedTableDoc);
@@ -122,8 +123,11 @@ router.post('/:tableId/join-table', async (req, res) => {
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
-      console.log(`[TABLE_ROUTE_JOIN] Emitting tableStatusUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
+      console.log(`[TABLE_ROUTE_JOIN] Attempting to emit tableStatusUpdate for table ${tableId}. Venue: ${updatedTableForSocket.venueId}, perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
+      console.log(`[TABLE_ROUTE_JOIN] Emitted tableStatusUpdate for table ${tableId}.`);
+    } else {
+      console.warn(`[TABLE_ROUTE_JOIN] Not emitting tableStatusUpdate for ${tableId} because updatedTableForSocket is null.`);
     }
     io.to(userId).emit('tableJoined', { tableId: table._id, tableNumber: table.tableNumber, message, playerSlot });
 
@@ -160,8 +164,11 @@ router.post('/:tableId/join-queue', async (req, res) => {
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
-      console.log(`[TABLE_ROUTE_JOIN_QUEUE] Emitting queueUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
+      console.log(`[TABLE_ROUTE_JOIN_QUEUE] Attempting to emit queueUpdate for table ${tableId}. Venue: ${updatedTableForSocket.venueId}, perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('queueUpdate', updatedTableForSocket);
+      console.log(`[TABLE_ROUTE_JOIN_QUEUE] Emitted queueUpdate for table ${tableId}.`);
+    } else {
+      console.warn(`[TABLE_ROUTE_JOIN_QUEUE] Not emitting queueUpdate for ${tableId} because updatedTableForSocket is null.`);
     }
 
     res.status(200).json({ message: 'Successfully joined the queue.', table: updatedTableForSocket });
@@ -201,8 +208,11 @@ router.post('/:tableId/leave-queue', async (req, res) => {
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
-      console.log(`[TABLE_ROUTE_LEAVE_QUEUE] Emitting queueUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
+      console.log(`[TABLE_ROUTE_LEAVE_QUEUE] Attempting to emit queueUpdate for table ${tableId}. Venue: ${updatedTableForSocket.venueId}, perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('queueUpdate', updatedTableForSocket);
+      console.log(`[TABLE_ROUTE_LEAVE_QUEUE] Emitted queueUpdate for table ${tableId}.`);
+    } else {
+      console.warn(`[TABLE_ROUTE_LEAVE_QUEUE] Not emitting queueUpdate for ${tableId} because updatedTableForSocket is null.`);
     }
 
     res.status(200).json({ message: 'Successfully left the queue.', table: updatedTableForSocket });
@@ -239,8 +249,11 @@ router.post('/:tableId/clear-queue', async (req, res) => {
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
-      console.log(`[TABLE_ROUTE_CLEAR_QUEUE] Emitting queueUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
+      console.log(`[TABLE_ROUTE_CLEAR_QUEUE] Attempting to emit queueUpdate for table ${tableId}. Venue: ${updatedTableForSocket.venueId}, perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('queueUpdate', updatedTableForSocket);
+      console.log(`[TABLE_ROUTE_CLEAR_QUEUE] Emitted queueUpdate for table ${tableId}.`);
+    } else {
+      console.warn(`[TABLE_ROUTE_CLEAR_QUEUE] Not emitting queueUpdate for ${tableId} because updatedTableForSocket is null.`);
     }
 
     res.status(200).json({ message: 'Queue cleared successfully.', table: updatedTableForSocket });
@@ -309,8 +322,11 @@ router.post('/:tableId/claim-win', async (req, res) => {
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
-      console.log(`[TABLE_ROUTE_CLAIM_WIN] Emitting tableStatusUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
+      console.log(`[TABLE_ROUTE_CLAIM_WIN] Attempting to emit tableStatusUpdate for table ${tableId}. Venue: ${updatedTableForSocket.venueId}, perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
+      console.log(`[TABLE_ROUTE_CLAIM_WIN] Emitted tableStatusUpdate for table ${tableId}.`);
+    } else {
+      console.warn(`[TABLE_ROUTE_CLAIM_WIN] Not emitting tableStatusUpdate for ${tableId} because updatedTableForSocket is null.`);
     }
 
     res.status(200).json({ message: 'Win claim sent for confirmation.' });
@@ -342,7 +358,7 @@ router.post('/:tableId/confirm-win', async (req, res) => {
     }
 
     const isConfirmerOpponent = (table.currentPlayers.player1Id?.toString() === confirmerId.toString() && table.currentPlayers.player2Id?.toString() === winnerId.toString()) ||
-                                (table.currentPlayers.player22Id?.toString() === confirmerId.toString() && table.currentPlayers.player1Id?.toString() === winnerId.toString());
+                                (table.currentPlayers.player2Id?.toString() === confirmerId.toString() && table.currentPlayers.player1Id?.toString() === winnerId.toString());
 
     if (!isConfirmerOpponent) {
       return res.status(403).json({ message: 'Access denied. Only the opponent can confirm the win.' });
@@ -393,8 +409,11 @@ router.post('/:tableId/confirm-win', async (req, res) => {
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
-      console.log(`[TABLE_ROUTE_CONFIRM_WIN] Emitting tableStatusUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
+      console.log(`[TABLE_ROUTE_CONFIRM_WIN] Attempting to emit tableStatusUpdate for table ${tableId}. Venue: ${updatedTableForSocket.venueId}, perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
+      console.log(`[TABLE_ROUTE_CONFIRM_WIN] Emitted tableStatusUpdate for table ${tableId}.`);
+    } else {
+      console.warn(`[TABLE_ROUTE_CONFIRM_WIN] Not emitting tableStatusUpdate for ${tableId} because updatedTableForSocket is null.`);
     }
 
     res.status(200).json({ message: 'Win confirmed and game ended.' });
@@ -455,8 +474,11 @@ router.post('/:tableId/dispute-win', async (req, res) => {
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
-      console.log(`[TABLE_ROUTE_DISPUTE_WIN] Emitting tableStatusUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
+      console.log(`[TABLE_ROUTE_DISPUTE_WIN] Attempting to emit tableStatusUpdate for table ${tableId}. Venue: ${updatedTableForSocket.venueId}, perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
+      console.log(`[TABLE_ROUTE_DISPUTE_WIN] Emitted tableStatusUpdate for table ${tableId}.`);
+    } else {
+      console.warn(`[TABLE_ROUTE_DISPUTE_WIN] Not emitting tableStatusUpdate for ${tableId} because updatedTableForSocket is null.`);
     }
 
     res.status(200).json({ message: 'Win dispute recorded. Game state reverted.' });
@@ -527,8 +549,11 @@ router.post('/:tableId/remove-player', async (req, res) => {
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
-      console.log(`[TABLE_ROUTE_REMOVE_PLAYER] Emitting tableStatusUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
+      console.log(`[TABLE_ROUTE_REMOVE_PLAYER] Attempting to emit tableStatusUpdate for table ${tableId}. Venue: ${updatedTableForSocket.venueId}, perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
+      console.log(`[TABLE_ROUTE_REMOVE_PLAYER] Emitted tableStatusUpdate for table ${tableId}.`);
+    } else {
+      console.warn(`[TABLE_ROUTE_REMOVE_PLAYER] Not emitting tableStatusUpdate for ${tableId} because updatedTableForSocket is null.`);
     }
 
     res.status(200).json({ message: 'Player removed successfully.' });
