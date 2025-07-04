@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
-const authMiddleware = require('../middleware/authMiddleware'); // Assuming this is your auth middleware
+const authMiddleware = require('../middleware/authMiddleware');
 
 // Apply authMiddleware to all routes in this router
 router.use(authMiddleware);
@@ -60,7 +60,7 @@ router.post('/update-fcm-token', async (req, res) => {
   }
   console.log(`[UserRoutes:/update-fcm-token] Received request for user ${userId} with token: ${fcmToken.substring(0, 10)}...`);
 
-  try {
+  try { // <--- Added try-catch around the entire route handler
     const user = await User.findById(userId);
 
     if (!user) {
@@ -85,8 +85,8 @@ router.post('/update-fcm-token', async (req, res) => {
 
     res.status(200).json({ message: 'FCM token updated successfully.' });
   } catch (error) {
-    console.error('[UserRoutes:/update-fcm-token] Error updating FCM token:', error.message);
-    res.status(500).json({ message: 'Failed to update FCM token.' });
+    console.error('[UserRoutes:/update-fcm-token] UNEXPECTED ERROR updating FCM token:', error.message, error.stack); // Log stack trace
+    res.status(500).json({ message: 'Failed to update FCM token due to server error.' }); // Always send JSON
   }
 });
 
