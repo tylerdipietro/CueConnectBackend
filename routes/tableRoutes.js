@@ -303,37 +303,41 @@ router.post('/:tableId/claim-win', async (req, res) => {
 
     // FCM Notification to Opponent
     const opponentUser = await User.findById(opponentId);
-    if (opponentUser && opponentUser.fcmTokens && opponentUser.fcmTokens.length > 0) { // <--- FIX: Check fcmTokens array
-      const venueNameForNotification = table.venueId ? table.venueId.name : 'Unknown Venue';
-      const message = {
-        notification: {
-          title: 'Win Claimed!',
-          body: `${winnerDisplayName} claims victory on Table ${table.tableNumber} at ${venueNameForNotification}. Confirm or dispute?`,
-        },
-        data: {
-          type: 'win_confirmation',
-          tableId: tableId.toString(),
-          tableNumber: table.tableNumber.toString(),
-          winnerId: winnerId.toString(),
-          winnerDisplayName: winnerDisplayName,
-          sessionId: table.currentSessionId ? table.currentSessionId.toString() : '',
-        },
-        // Iterate through all FCM tokens for the opponent
-        tokens: opponentUser.fcmTokens, // <--- FIX: Use tokens (plural) for multiple recipients
-      };
-      // Use sendEachForMulticast for multiple tokens
-      req.app.get('admin').messaging().sendEachForMulticast(message) // <--- FIX: Use sendEachForMulticast
-        .then((response) => {
-          console.log(`FCM: Win claim notification sent to opponent ${opponentUser.email}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
-          if (response.failureCount > 0) {
-            response.responses.forEach((resp, idx) => {
-              if (!resp.success) {
-                console.error(`FCM: Failed to send to token ${opponentUser.fcmTokens[idx]}: ${resp.error}`);
-              }
-            });
-          }
-        })
-        .catch(error => console.error(`FCM: Error sending win claim notification to ${opponentUser.email}:`, error));
+    // Defensive check for admin instance
+    const admin = req.app.get('admin'); // Get the admin instance
+    if (opponentUser && opponentUser.fcmTokens && opponentUser.fcmTokens.length > 0) {
+      if (admin) { // Check if admin instance is available
+        const venueNameForNotification = table.venueId ? table.venueId.name : 'Unknown Venue';
+        const message = {
+          notification: {
+            title: 'Win Claimed!',
+            body: `${winnerDisplayName} claims victory on Table ${table.tableNumber} at ${venueNameForNotification}. Confirm or dispute?`,
+          },
+          data: {
+            type: 'win_confirmation',
+            tableId: tableId.toString(),
+            tableNumber: table.tableNumber.toString(),
+            winnerId: winnerId.toString(),
+            winnerDisplayName: winnerDisplayName,
+            sessionId: table.currentSessionId ? table.currentSessionId.toString() : '',
+          },
+          tokens: opponentUser.fcmTokens,
+        };
+        admin.messaging().sendEachForMulticast(message)
+          .then((response) => {
+            console.log(`FCM: Win claim notification sent to opponent ${opponentUser.email}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
+            if (response.failureCount > 0) {
+              response.responses.forEach((resp, idx) => {
+                if (!resp.success) {
+                  console.error(`FCM: Failed to send to token ${opponentUser.fcmTokens[idx]}: ${resp.error}`);
+                }
+              });
+            }
+          })
+          .catch(error => console.error(`FCM: Error sending win claim notification to ${opponentUser.email}:`, error));
+      } else {
+        console.error('[TABLE_ROUTE_CLAIM_WIN] Firebase Admin SDK instance not found on app object. Cannot send FCM notification.');
+      }
     } else {
       console.log(`FCM: Opponent ${opponentId} has no FCM tokens registered or user not found. OpponentUser exists: ${!!opponentUser}, FCM Tokens exist and are array: ${Array.isArray(opponentUser?.fcmTokens) && opponentUser.fcmTokens.length > 0}`);
     }
@@ -414,31 +418,37 @@ router.post('/:tableId/confirm-win', async (req, res) => {
       table.status = 'available';
 
       const nextPlayerUser = await User.findById(nextPlayerId);
-      if (nextPlayerUser && nextPlayerUser.fcmTokens && nextPlayerUser.fcmTokens.length > 0) { // <--- FIX: Check fcmTokens array
-        const message = {
-          notification: {
-            title: 'Your Turn!',
-            body: `It's your turn on Table ${table.tableNumber} at ${table.venueId.name}.`,
-          },
-          data: {
-            type: 'your_turn',
-            tableId: tableId.toString(),
-            tableNumber: table.tableNumber.toString(),
-          },
-          tokens: nextPlayerUser.fcmTokens, // <--- FIX: Use tokens (plural)
-        };
-        req.app.get('admin').messaging().sendEachForMulticast(message) // <--- FIX: Use sendEachForMulticast
-          .then((response) => {
-            console.log(`FCM: Next player notification sent to ${nextPlayerUser.email}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
-            if (response.failureCount > 0) {
-              response.responses.forEach((resp, idx) => {
-                if (!resp.success) {
-                  console.error(`FCM: Failed to send to token ${nextPlayerUser.fcmTokens[idx]}: ${resp.error}`);
-                }
-              });
-            }
-          })
-          .catch(error => console.error(`FCM: Error sending next player notification to ${nextPlayerUser.email}:`, error));
+      // Defensive check for admin instance
+      const admin = req.app.get('admin'); // Get the admin instance
+      if (nextPlayerUser && nextPlayerUser.fcmTokens && nextPlayerUser.fcmTokens.length > 0) {
+        if (admin) { // Check if admin instance is available
+          const message = {
+            notification: {
+              title: 'Your Turn!',
+              body: `It's your turn on Table ${table.tableNumber} at ${table.venueId.name}.`,
+            },
+            data: {
+              type: 'your_turn',
+              tableId: tableId.toString(),
+              tableNumber: table.tableNumber.toString(),
+            },
+            tokens: nextPlayerUser.fcmTokens,
+          };
+          admin.messaging().sendEachForMulticast(message)
+            .then((response) => {
+              console.log(`FCM: Next player notification sent to ${nextPlayerUser.email}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
+              if (response.failureCount > 0) {
+                response.responses.forEach((resp, idx) => {
+                  if (!resp.success) {
+                    console.error(`FCM: Failed to send to token ${nextPlayerUser.fcmTokens[idx]}: ${resp.error}`);
+                  }
+                });
+              }
+            })
+            .catch(error => console.error(`FCM: Error sending next player notification to ${nextPlayerUser.email}:`, error));
+        } else {
+          console.error('[TABLE_ROUTE_CONFIRM_WIN] Firebase Admin SDK instance not found on app object. Cannot send FCM notification.');
+        }
       }
     } else {
       table.status = 'available';
@@ -497,24 +507,34 @@ router.post('/:tableId/dispute-win', async (req, res) => {
     const notificationTitle = 'Win Disputed!';
     const notificationBody = `${req.user.displayName || req.user.email} has disputed the win claim on Table ${table.tableNumber}. The game state has been reverted.`;
 
-    if (player1 && player1.fcmTokens && player1.fcmTokens.length > 0) { // <--- FIX: Check fcmTokens array
-      req.app.get('admin').messaging().sendEachForMulticast({ // <--- FIX: Use sendEachForMulticast
-        notification: { title: notificationTitle, body: notificationBody },
-        data: { type: 'win_disputed', tableId: tableId.toString(), tableNumber: table.tableNumber.toString() },
-        tokens: player1.fcmTokens, // <--- FIX: Use tokens (plural)
-      }).catch(error => console.error(`FCM: Error sending dispute notification to player1:`, error));
+    // Defensive check for admin instance
+    const admin = req.app.get('admin'); // Get the admin instance
+    if (player1 && player1.fcmTokens && player1.fcmTokens.length > 0) {
+      if (admin) { // Check if admin instance is available
+        req.app.get('admin').messaging().sendEachForMulticast({
+          notification: { title: notificationTitle, body: notificationBody },
+          data: { type: 'win_disputed', tableId: tableId.toString(), tableNumber: table.tableNumber.toString() },
+          tokens: player1.fcmTokens,
+        }).catch(error => console.error(`FCM: Error sending dispute notification to player1:`, error));
+      } else {
+        console.error('[TABLE_ROUTE_DISPUTE_WIN] Firebase Admin SDK instance not found on app object. Cannot send FCM notification to player1.');
+      }
     }
-    if (player2 && player2.fcmTokens && player2.fcmTokens.length > 0) { // <--- FIX: Check fcmTokens array
-      req.app.get('admin').messaging().sendEachForMulticast({ // <--- FIX: Use sendEachForMulticast
-        notification: { title: notificationTitle, body: notificationBody },
-        data: { type: 'win_disputed', tableId: tableId.toString(), tableNumber: table.tableNumber.toString() },
-        tokens: player2.fcmTokens, // <--- FIX: Use tokens (plural)
-      }).catch(error => console.error(`FCM: Error sending dispute notification to player2:`, error));
+    if (player2 && player2.fcmTokens && player2.fcmTokens.length > 0) {
+      if (admin) { // Check if admin instance is available
+        req.app.get('admin').messaging().sendEachForMulticast({
+          notification: { title: notificationTitle, body: notificationBody },
+          data: { type: 'win_disputed', tableId: tableId.toString(), tableNumber: table.tableNumber.toString() },
+          tokens: player2.fcmTokens,
+        }).catch(error => console.error(`FCM: Error sending dispute notification to player2:`, error));
+      } else {
+        console.error('[TABLE_ROUTE_DISPUTE_WIN] Firebase Admin SDK instance not found on app object. Cannot send FCM notification to player2.');
+      }
     }
 
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket && updatedTableForSocket.venueId && updatedTableForSocket.venueId._id) {
-      const venueRoomId = updatedTableForSocket.venueId._id.toString();
+      const venueRoomId = updatedTableForSocket.venueId._id._id.toString();
       console.log(`[TABLE_ROUTE_DISPUTE_WIN] Attempting to emit tableStatusUpdate for table ${tableId} to room: ${venueRoomId}. perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(venueRoomId).emit('tableStatusUpdate', updatedTableForSocket);
       console.log(`[TABLE_ROUTE_DISPUTE_WIN] Emitted tableStatusUpdate for table ${tableId} to room: ${venueRoomId}.`);
