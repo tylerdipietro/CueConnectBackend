@@ -3,6 +3,10 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User'); // User model
 const { getSocketIO } = require('../services/socketService'); // Import Socket.IO instance (if used in other user-related routes)
+const authMiddleware = require('../middleware/authMiddleware'); // Assuming authMiddleware is applied globally or here
+
+// Apply authMiddleware to all routes in this router
+router.use(authMiddleware);
 
 /**
  * @route GET /api/user/profile
@@ -43,8 +47,9 @@ router.get('/profile', async (req, res) => {
 
 
 /**
- * @route POST /api/users/update-fcm-token
+ * @route POST /api/user/update-fcm-token
  * @description Registers or updates a device's FCM token for push notifications.
+ * This endpoint expects a POST request.
  * @access Private (requires Firebase auth token)
  */
 router.post('/update-fcm-token', async (req, res) => {
@@ -52,29 +57,36 @@ router.post('/update-fcm-token', async (req, res) => {
   const userId = req.user.uid;
 
   if (!fcmToken) {
+    console.warn(`[UserRoutes:/update-fcm-token] Missing FCM token in request body for user ${userId}.`);
     return res.status(400).json({ message: 'FCM token is required.' });
   }
-  console.log(`[UserRoutes:/update-fcm-token] Received request for user ${userId} with token: ${fcmToken}`);
+  console.log(`[UserRoutes:/update-fcm-token] Received request for user ${userId} with token: ${fcmToken.substring(0, 10)}...`);
 
   try {
     const user = await User.findById(userId);
 
     if (!user) {
-      console.error(`[UserRoutes:/update-fcm-token] User not found in DB for UID: ${userId}`);
+      console.error(`[UserRoutes:/update-fcm-token] User not found in DB for UID: ${userId}.`);
       return res.status(404).json({ message: 'User not found.' });
+    }
+
+    // Ensure fcmTokens is initialized as an array
+    if (!Array.isArray(user.fcmTokens)) {
+      user.fcmTokens = [];
+      console.log(`[UserRoutes:/update-fcm-token] Initialized fcmTokens array for user ${userId}.`);
     }
 
     if (!user.fcmTokens.includes(fcmToken)) {
       user.fcmTokens.push(fcmToken);
       await user.save();
-      console.log(`[UserRoutes] FCM token '${fcmToken}' added for user '${userId}'.`);
+      console.log(`[UserRoutes:/update-fcm-token] FCM token '${fcmToken.substring(0, 10)}...' ADDED for user '${userId}'. Total tokens: ${user.fcmTokens.length}`);
     } else {
-      console.log(`[UserRoutes] FCM token '${fcmToken}' already exists for user '${userId}'.`);
+      console.log(`[UserRoutes:/update-fcm-token] FCM token '${fcmToken.substring(0, 10)}...' already exists for user '${userId}'. No update needed.`);
     }
 
     res.status(200).json({ message: 'FCM token updated successfully.' });
   } catch (error) {
-    console.error('[UserRoutes] Error updating FCM token:', error.message);
+    console.error('[UserRoutes:/update-fcm-token] Error updating FCM token:', error.message);
     res.status(500).json({ message: 'Failed to update FCM token.' });
   }
 });
@@ -99,7 +111,7 @@ router.post('/sync', async (req, res) => {
         _id: uid,
         displayName: displayNameFromFirebase,
         email: emailFromFirebase,
-        fcmTokens: [],
+        fcmTokens: [], // Initialize as an empty array for new users
         tokenBalance: 0,
         isAdmin: false,
         stripeCustomerId: null, // Ensure this is initialized

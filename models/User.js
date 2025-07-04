@@ -15,7 +15,7 @@ const userSchema = new mongoose.Schema({
   },
   displayName: {
     type: String,
-    required: false, // Display name might not always be present from Firebase
+    required: false,
     trim: true,
   },
   isAdmin: {
@@ -31,13 +31,12 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: false,
     unique: true,
-    sparse: true, // Allows null values but enforces uniqueness for non-null values
-  },
-  fcmToken: { // Firebase Cloud Messaging token for push notifications
-    type: String,
-    required: false,
-    unique: true,
     sparse: true,
+  },
+  // CRITICAL FIX: Changed from singular 'fcmToken' String to plural 'fcmTokens' Array of Strings
+  fcmTokens: { // Firebase Cloud Messaging tokens for push notifications
+    type: [String], // Define as an array of Strings
+    default: [],    // Initialize as an empty array
   },
 }, { timestamps: true });
 

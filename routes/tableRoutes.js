@@ -303,7 +303,7 @@ router.post('/:tableId/claim-win', async (req, res) => {
 
     // FCM Notification to Opponent
     const opponentUser = await User.findById(opponentId);
-    if (opponentUser && opponentUser.fcmToken) {
+    if (opponentUser && opponentUser.fcmTokens && opponentUser.fcmTokens.length > 0) { // <--- FIX: Check fcmTokens array
       const venueNameForNotification = table.venueId ? table.venueId.name : 'Unknown Venue';
       const message = {
         notification: {
@@ -318,22 +318,33 @@ router.post('/:tableId/claim-win', async (req, res) => {
           winnerDisplayName: winnerDisplayName,
           sessionId: table.currentSessionId ? table.currentSessionId.toString() : '',
         },
-        token: opponentUser.fcmToken,
+        // Iterate through all FCM tokens for the opponent
+        tokens: opponentUser.fcmTokens, // <--- FIX: Use tokens (plural) for multiple recipients
       };
-      req.app.get('admin').messaging().send(message)
-        .then(() => console.log(`FCM: Win claim notification sent to ${opponentUser.email}`))
+      // Use sendEachForMulticast for multiple tokens
+      req.app.get('admin').messaging().sendEachForMulticast(message) // <--- FIX: Use sendEachForMulticast
+        .then((response) => {
+          console.log(`FCM: Win claim notification sent to opponent ${opponentUser.email}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
+          if (response.failureCount > 0) {
+            response.responses.forEach((resp, idx) => {
+              if (!resp.success) {
+                console.error(`FCM: Failed to send to token ${opponentUser.fcmTokens[idx]}: ${resp.error}`);
+              }
+            });
+          }
+        })
         .catch(error => console.error(`FCM: Error sending win claim notification to ${opponentUser.email}:`, error));
     } else {
-      console.log(`FCM: Opponent ${opponentId} has no FCM token or user not found. OpponentUser exists: ${!!opponentUser}, FCM Token exists: ${!!(opponentUser && opponentUser.fcmToken)}`);
+      console.log(`FCM: Opponent ${opponentId} has no FCM tokens registered or user not found. OpponentUser exists: ${!!opponentUser}, FCM Tokens exist and are array: ${Array.isArray(opponentUser?.fcmTokens) && opponentUser.fcmTokens.length > 0}`);
     }
 
     // Socket.IO event to the OPPONENT (player who needs to confirm)
-    io.to(opponentId).emit('winClaimedNotification', { // <--- FIX IS HERE: Emitting to opponentId
+    io.to(opponentId).emit('winClaimedNotification', {
         tableId: table._id.toString(),
         tableNumber: table.tableNumber,
         winnerId: winnerId,
         winnerDisplayName: winnerDisplayName,
-        message: `${winnerDisplayName} claims victory on Table ${table.tableNumber}. Do you confirm this win?` // Message for opponent
+        message: `${winnerDisplayName} claims victory on Table ${table.tableNumber}. Do you confirm this win?`
     });
     console.log(`[TABLE_ROUTE_CLAIM_WIN] Emitted winClaimedNotification to opponent ${opponentId}.`);
 
@@ -403,7 +414,7 @@ router.post('/:tableId/confirm-win', async (req, res) => {
       table.status = 'available';
 
       const nextPlayerUser = await User.findById(nextPlayerId);
-      if (nextPlayerUser && nextPlayerUser.fcmToken) {
+      if (nextPlayerUser && nextPlayerUser.fcmTokens && nextPlayerUser.fcmTokens.length > 0) { // <--- FIX: Check fcmTokens array
         const message = {
           notification: {
             title: 'Your Turn!',
@@ -414,10 +425,19 @@ router.post('/:tableId/confirm-win', async (req, res) => {
             tableId: tableId.toString(),
             tableNumber: table.tableNumber.toString(),
           },
-          token: nextPlayerUser.fcmToken,
+          tokens: nextPlayerUser.fcmTokens, // <--- FIX: Use tokens (plural)
         };
-        req.app.get('admin').messaging().send(message)
-          .then(() => console.log(`FCM: Next player notification sent to ${nextPlayerUser.email}`))
+        req.app.get('admin').messaging().sendEachForMulticast(message) // <--- FIX: Use sendEachForMulticast
+          .then((response) => {
+            console.log(`FCM: Next player notification sent to ${nextPlayerUser.email}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
+            if (response.failureCount > 0) {
+              response.responses.forEach((resp, idx) => {
+                if (!resp.success) {
+                  console.error(`FCM: Failed to send to token ${nextPlayerUser.fcmTokens[idx]}: ${resp.error}`);
+                }
+              });
+            }
+          })
           .catch(error => console.error(`FCM: Error sending next player notification to ${nextPlayerUser.email}:`, error));
       }
     } else {
@@ -477,18 +497,18 @@ router.post('/:tableId/dispute-win', async (req, res) => {
     const notificationTitle = 'Win Disputed!';
     const notificationBody = `${req.user.displayName || req.user.email} has disputed the win claim on Table ${table.tableNumber}. The game state has been reverted.`;
 
-    if (player1 && player1.fcmToken) {
-      req.app.get('admin').messaging().send({
+    if (player1 && player1.fcmTokens && player1.fcmTokens.length > 0) { // <--- FIX: Check fcmTokens array
+      req.app.get('admin').messaging().sendEachForMulticast({ // <--- FIX: Use sendEachForMulticast
         notification: { title: notificationTitle, body: notificationBody },
         data: { type: 'win_disputed', tableId: tableId.toString(), tableNumber: table.tableNumber.toString() },
-        token: player1.fcmToken,
+        tokens: player1.fcmTokens, // <--- FIX: Use tokens (plural)
       }).catch(error => console.error(`FCM: Error sending dispute notification to player1:`, error));
     }
-    if (player2 && player2.fcmToken) {
-      req.app.get('admin').messaging().send({
+    if (player2 && player2.fcmTokens && player2.fcmTokens.length > 0) { // <--- FIX: Check fcmTokens array
+      req.app.get('admin').messaging().sendEachForMulticast({ // <--- FIX: Use sendEachForMulticast
         notification: { title: notificationTitle, body: notificationBody },
         data: { type: 'win_disputed', tableId: tableId.toString(), tableNumber: table.tableNumber.toString() },
-        token: player2.fcmToken,
+        tokens: player2.fcmTokens, // <--- FIX: Use tokens (plural)
       }).catch(error => console.error(`FCM: Error sending dispute notification to player2:`, error));
     }
 
