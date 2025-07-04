@@ -2,72 +2,74 @@
 
 const socketIo = require('socket.io');
 const Table = require('../models/Table'); // Import Table model
-const { getPopulatedTableWithPerGameCost } = require('./tableHelpers'); // NEW: Import from the new helper file
-const { populateTablePlayersDetails, populateQueueWithUserDetails } = require('./gameService'); // Assuming this path is correct
+const { getPopulatedTableWithPerGameCost } = require('./tableHelpers');
+const { populateTablePlayersDetails, populateQueueWithUserDetails } = require('./gameService');
 
-let io;
+let ioInstance;
 
 function initializeSocketIO(server) {
-  io = socketIo(server, {
+  if (ioInstance) {
+    console.warn('Socket.IO already initialized.');
+    return ioInstance;
+  }
+  ioInstance = socketIo(server, {
     cors: {
       origin: "*", // Allow all origins for development. Restrict in production.
       methods: ["GET", "POST"]
     }
   });
 
-  io.on('connection', (socket) => {
-    console.log(`Socket connected: ${socket.id}`);
+  ioInstance.on('connection', (socket) => {
+    console.log(`[SOCKET_SERVICE] Socket connected: ${socket.id}`);
 
-    // Handle user registration for updates (e.g., token balance)
     socket.on('registerForUpdates', (userId) => {
-      console.log(`User ${userId} registered socket ${socket.id} for real-time updates.`);
+      console.log(`[SOCKET_SERVICE] User ${userId} registered socket ${socket.id} for real-time updates.`);
       socket.join(userId); // Join a room specific to the user's ID
     });
 
-    // Handle joining a venue-specific room
     socket.on('joinVenueRoom', async (venueId) => {
-      console.log(`Socket ${socket.id} joined venue room: ${venueId}`);
+      console.log(`[SOCKET_SERVICE] Socket ${socket.id} RECEIVED joinVenueRoom for venue: ${venueId}.`); // NEW LOG
       socket.join(venueId);
 
       try {
         const tablesInVenue = await Table.find({ venueId });
         const populatedTables = await Promise.all(
           tablesInVenue.map(async (table) => {
-            // Use the shared helper function to get fully populated table data with perGameCost
             const populatedTable = await getPopulatedTableWithPerGameCost(table._id);
             return populatedTable;
           })
         );
-        // Filter out any nulls if a table couldn't be populated (e.g., venue missing)
         const validPopulatedTables = populatedTables.filter(t => t !== null);
         
-        console.log(`[Socket.IO] Sent initialVenueState to socket ${socket.id} for venue ${venueId}. Tables count: ${validPopulatedTables.length}`);
+        console.log(`[SOCKET_SERVICE] Sent initialVenueState to socket ${socket.id} for venue ${venueId}. Tables count: ${validPopulatedTables.length}`);
         if (validPopulatedTables.length > 0) {
-          console.log(`[Socket.IO] First table in initialVenueState (perGameCost): ${validPopulatedTables[0].perGameCost}`);
+          console.log(`[SOCKET_SERVICE] First table in initialVenueState (perGameCost): ${validPopulatedTables[0].perGameCost}`);
         }
         socket.emit('initialVenueState', validPopulatedTables);
       } catch (error) {
-        console.error(`Error sending initial venue state for venue ${venueId}:`, error);
+        console.error(`[SOCKET_SERVICE] Error sending initial venue state for venue ${venueId}:`, error);
       }
     });
 
-    // Handle leaving a venue-specific room
     socket.on('leaveVenueRoom', (venueId) => {
-      console.log(`Socket ${socket.id} left venue room: ${venueId}`);
+      console.log(`[SOCKET_SERVICE] Socket ${socket.id} left venue room: ${venueId}.`);
       socket.leave(venueId);
     });
 
     socket.on('disconnect', (reason) => {
-      console.log(`Socket disconnected: ${socket.id}, Reason: ${reason}`);
+      console.log(`[SOCKET_SERVICE] Socket disconnected: ${socket.id}, Reason: ${reason}`);
     });
   });
+
+  return ioInstance;
 }
 
 function getSocketIO() {
-  if (!io) {
-    throw new Error('Socket.IO not initialized. Call initializeSocketIO first.');
+  if (!ioInstance) {
+    console.error('CRITICAL ERROR: Socket.IO instance not initialized when getSocketIO was called.');
+    throw new Error('Socket.IO not initialized. Call initializeSocketIO first in your main server file.');
   }
-  return io;
+  return ioInstance;
 }
 
 module.exports = {
