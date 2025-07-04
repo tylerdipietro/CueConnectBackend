@@ -1,6 +1,7 @@
 // routes/tableRoutes.js
 
 const express = require('express');
+const router = express = require('express');
 const router = express.Router();
 const Table = require('../models/Table'); // Assuming you have a Table model
 const User = require('../models/User'); // Assuming you have a User model
@@ -16,17 +17,42 @@ router.use(authMiddleware);
 // Helper function to get a fully populated table object with perGameCost
 // This avoids duplicating the logic in every route handler
 async function getPopulatedTableWithPerGameCost(tableId) {
-  const table = await Table.findById(tableId).populate('venueId');
-  if (!table) {
-    return null;
-  }
-  const populatedQueue = await populateQueueWithUserDetails(table.queue);
-  const tableWithQueue = { ...table.toObject(), queue: populatedQueue }; // Convert to plain object
-  const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
+  try {
+    console.log(`[SOCKET_HELPER] Fetching table ${tableId} for population...`);
+    const table = await Table.findById(tableId).populate('venueId');
 
-  // Add perGameCost from the populated venue
-  const venuePerGameCost = table.venueId ? (typeof table.venueId.perGameCost === 'number' ? table.venueId.perGameCost : 10) : 10;
-  return { ...fullyPopulatedTable, perGameCost: venuePerGameCost };
+    if (!table) {
+      console.warn(`[SOCKET_HELPER] Table ${tableId} not found.`);
+      return null;
+    }
+
+    // Ensure venueId is populated before accessing its properties
+    if (!table.venueId) {
+      console.error(`[SOCKET_HELPER] Venue not populated for table ${tableId}. Cannot get perGameCost.`);
+      // Return table without perGameCost if venue is missing, or handle as error
+      const populatedQueue = await populateQueueWithUserDetails(table.queue);
+      const tableWithQueue = { ...table.toObject(), queue: populatedQueue };
+      const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
+      return { ...fullyPopulatedTable, perGameCost: null }; // Indicate missing cost
+    }
+
+    console.log(`[SOCKET_HELPER] Table ${tableId} venueId populated: ${table.venueId._id}`);
+    const venuePerGameCost = typeof table.venueId.perGameCost === 'number' ? table.venueId.perGameCost : 10;
+    console.log(`[SOCKET_HELPER] Table ${tableId} perGameCost from venue: ${venuePerGameCost}`);
+
+    const populatedQueue = await populateQueueWithUserDetails(table.queue);
+    // Convert Mongoose document to plain object before adding properties
+    const tableObject = table.toObject();
+    const tableWithQueue = { ...tableObject, queue: populatedQueue };
+    const fullyPopulatedTable = await populateTablePlayersDetails(tableWithQueue);
+
+    const finalTableData = { ...fullyPopulatedTable, perGameCost: venuePerGameCost };
+    console.log(`[SOCKET_HELPER] Final populated table data for ${tableId} (perGameCost: ${finalTableData.perGameCost}):`, JSON.stringify(finalTableData, null, 2));
+    return finalTableData;
+  } catch (error) {
+    console.error(`[SOCKET_HELPER] Error in getPopulatedTableWithPerGameCost for table ${tableId}:`, error);
+    return null; // Return null on error
+  }
 }
 
 
@@ -60,7 +86,7 @@ router.put('/:id', async (req, res) => {
 
   const { id } = req.params;
   const { tableNumber, esp32DeviceId } = req.body;
-  const io = getSocketIO(); // Get io instance for emitting
+  const io = getSocketIO();
 
   try {
     const updateFields = {};
@@ -73,13 +99,14 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ message: 'Table not found.' });
     }
 
-    // Emit update after modifying the table
-    const updatedTableForSocket = await getPopulatedTableWithPerGameCost(updatedTableDoc._id); // Use helper
+    // Emit update after modifying the table, using the helper
+    const updatedTableForSocket = await getPopulatedTableWithPerGameCost(updatedTableDoc._id);
     if (updatedTableForSocket) {
+      console.log(`[TABLE_ROUTE_PUT] Emitting tableStatusUpdate for ${id} with perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
     }
 
-    res.status(200).json(updatedTableDoc); // Return the raw updated document to the caller
+    res.status(200).json(updatedTableDoc);
   } catch (error) {
     console.error('Error updating table:', error);
     res.status(500).json({ message: 'Server error updating table.', error: error.message });
@@ -133,9 +160,10 @@ router.post('/:tableId/join-table', async (req, res) => {
 
     await table.save();
 
-    // CRITICAL: Use helper to get populated table with perGameCost for socket emission
+    // Use helper to get populated table with perGameCost for socket emission
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
+      console.log(`[TABLE_ROUTE_JOIN] Emitting tableStatusUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
     }
     io.to(userId).emit('tableJoined', { tableId: table._id, tableNumber: table.tableNumber, message, playerSlot });
@@ -168,12 +196,13 @@ router.post('/:tableId/join-queue', async (req, res) => {
     }
 
     table.queue.push(userId);
-    table.status = 'queued'; // Table status might change to queued if it wasn't already
+    table.status = 'queued';
     await table.save();
 
-    // CRITICAL: Use helper to get populated table with perGameCost for socket emission
+    // Use helper to get populated table with perGameCost for socket emission
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
+      console.log(`[TABLE_ROUTE_JOIN_QUEUE] Emitting queueUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('queueUpdate', updatedTableForSocket);
     }
 
@@ -212,9 +241,10 @@ router.post('/:tableId/leave-queue', async (req, res) => {
     }
     await table.save();
 
-    // CRITICAL: Use helper to get populated table with perGameCost for socket emission
+    // Use helper to get populated table with perGameCost for socket emission
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
+      console.log(`[TABLE_ROUTE_LEAVE_QUEUE] Emitting queueUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('queueUpdate', updatedTableForSocket);
     }
 
@@ -250,9 +280,10 @@ router.post('/:tableId/clear-queue', async (req, res) => {
     }
     await table.save();
 
-    // CRITICAL: Use helper to get populated table with perGameCost for socket emission
+    // Use helper to get populated table with perGameCost for socket emission
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
+      console.log(`[TABLE_ROUTE_CLEAR_QUEUE] Emitting queueUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('queueUpdate', updatedTableForSocket);
     }
 
@@ -296,7 +327,7 @@ router.post('/:tableId/claim-win', async (req, res) => {
     await table.save();
 
     // Notify the opponent via FCM (if they have a token)
-    const opponentUser = await User.findOne({ firebaseUid: opponentId });
+    const opponentUser = await User.findById(opponentId); // Use findById
     if (opponentUser && opponentUser.fcmToken) {
       const message = {
         notification: {
@@ -313,7 +344,6 @@ router.post('/:tableId/claim-win', async (req, res) => {
         },
         token: opponentUser.fcmToken,
       };
-      // Assuming you have an admin.messaging() instance available via req.app.get('admin')
       req.app.get('admin').messaging().send(message)
         .then(() => console.log(`FCM: Win claim notification sent to ${opponentUser.email}`))
         .catch(error => console.error(`FCM: Error sending win claim notification to ${opponentUser.email}:`, error));
@@ -321,9 +351,10 @@ router.post('/:tableId/claim-win', async (req, res) => {
       console.log(`FCM: Opponent ${opponentId} has no FCM token or user not found.`);
     }
 
-    // CRITICAL: Use helper to get populated table with perGameCost for socket emission
+    // Use helper to get populated table with perGameCost for socket emission
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
+      console.log(`[TABLE_ROUTE_CLAIM_WIN] Emitting tableStatusUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
     }
 
@@ -405,9 +436,10 @@ router.post('/:tableId/confirm-win', async (req, res) => {
 
     await table.save();
 
-    // CRITICAL: Use helper to get populated table with perGameCost for socket emission
+    // Use helper to get populated table with perGameCost for socket emission
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
+      console.log(`[TABLE_ROUTE_CONFIRM_WIN] Emitting tableStatusUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
     }
 
@@ -467,9 +499,10 @@ router.post('/:tableId/dispute-win', async (req, res) => {
       }).catch(error => console.error(`FCM: Error sending dispute notification to player2:`, error));
     }
 
-    // CRITICAL: Use helper to get populated table with perGameCost for socket emission
+    // Use helper to get populated table with perGameCost for socket emission
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
+      console.log(`[TABLE_ROUTE_DISPUTE_WIN] Emitting tableStatusUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
     }
 
@@ -539,9 +572,10 @@ router.post('/:tableId/remove-player', async (req, res) => {
 
     await table.save();
 
-    // CRITICAL: Use helper to get populated table with perGameCost for socket emission
+    // Use helper to get populated table with perGameCost for socket emission
     const updatedTableForSocket = await getPopulatedTableWithPerGameCost(table._id);
     if (updatedTableForSocket) {
+      console.log(`[TABLE_ROUTE_REMOVE_PLAYER] Emitting tableStatusUpdate for ${tableId} with perGameCost: ${updatedTableForSocket.perGameCost}`);
       io.to(updatedTableForSocket.venueId.toString()).emit('tableStatusUpdate', updatedTableForSocket);
     }
 
@@ -594,7 +628,6 @@ router.post('/:tableId/pay-with-tokens', async (req, res) => {
     // 3. Verify cost matches venue's perGameCost
     const expectedCost = table.venueId.perGameCost;
     console.log(`[PAY_DEBUG] Venue perGameCost: ${expectedCost}`);
-    // Also add a check for `cost` being a number, as it could be undefined if frontend didn't send it
     if (typeof cost !== 'number' || isNaN(cost) || cost !== expectedCost) {
       console.warn(`[PAY_WARN] Mismatch or invalid cost. Expected ${expectedCost}, received ${cost}.`);
       return res.status(400).json({ message: `Invalid or mismatching table cost. Expected ${expectedCost}.` });
@@ -617,6 +650,7 @@ router.post('/:tableId/pay-with-tokens', async (req, res) => {
 
     // IMPORTANT: No changes to table status or currentPlayers here.
     // No tableStatusUpdate emitted for the venue room from this specific route.
+    // The frontend will update the token balance via the 'tokenBalanceUpdate' event.
 
     res.status(200).json({ message: `Successfully paid ${cost} tokens for Table ${table.tableNumber}. Your new balance is ${user.tokenBalance} tokens.`, newBalance: user.tokenBalance });
 
