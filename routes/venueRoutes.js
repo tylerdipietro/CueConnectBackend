@@ -7,8 +7,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const { getSocketIO } = require('../services/socketService');
 // Import gameService functions for populating table details
 const { populateTablePlayersDetails, populateQueueWithUserDetails } = require('../services/gameService');
-const { getPopulatedTableWithPerGameCost } = require('../services/tableHelpers'); 
-
+const { getPopulatedTableWithPerGameCost } = require('../services/tableHelpers');
 
 // Apply authMiddleware to all routes in this router
 router.use(authMiddleware);
@@ -74,7 +73,7 @@ router.post('/', async (req, res) => {
 
 /**
  * @route GET /api/venues
- * @description Get all venues (Admin only).
+ * @description Get all venues (Admin only), with their associated tables.
  * @access Private (Admin only)
  */
 router.get('/', async (req, res) => {
@@ -82,11 +81,21 @@ router.get('/', async (req, res) => {
     return res.status(403).json({ message: 'Access denied. Only administrators can view all venues.' });
   }
   try {
-    const venues = await Venue.find({});
-    res.json(venues);
+    const venues = await Venue.find({}).lean(); // Use .lean() for performance
+
+    // Manually populate tables for each venue
+    const populatedVenues = await Promise.all(venues.map(async (venue) => {
+      const tablesForVenue = await Table.find({ venueId: venue._id }).lean();
+      return {
+        ...venue,
+        tables: tablesForVenue, // Add the 'tables' array to the venue object
+      };
+    }));
+
+    res.json(populatedVenues);
   } catch (error) {
-    console.error('Error fetching all venues:', error);
-    res.status(500).json({ message: 'Server error fetching venues.' });
+    console.error('Error fetching all venues for admin dashboard:', error);
+    res.status(500).json({ message: 'Server error fetching venues for admin dashboard.' });
   }
 });
 
@@ -154,8 +163,10 @@ router.get('/:venueId', async (req, res) => {
  */
 router.get('/:venueId/tables-detailed', async (req, res) => {
   const { venueId } = req.params;
+  console.log(`[VENUE_ROUTES] Received request for detailed tables for venueId: ${venueId}`);
   try {
     // First, find the venue to get its perGameCost (this part is still explicit for initial fetch)
+    console.log(`[VENUE_ROUTES] Attempting to find venue by ID: ${venueId}`);
     const venue = await Venue.findById(venueId).lean();
     if (!venue) {
       console.error(`[VENUE_ROUTES] Venue not found for ID: ${venueId}`);
@@ -165,26 +176,36 @@ router.get('/:venueId/tables-detailed', async (req, res) => {
     console.log(`[VENUE_ROUTES] Fetched venue ${venue.name} (${venueId}), perGameCost: ${venuePerGameCost}`);
 
     // Then, fetch tables for that venue
+    console.log(`[VENUE_ROUTES] Attempting to find tables for venueId: ${venueId}`);
     const tables = await Table.find({ venueId }).lean();
     console.log(`[VENUE_ROUTES] Found ${tables.length} tables for venue ${venueId}`);
 
     // Populate player and queue details for each table AND add perGameCost
+    console.log('[VENUE_ROUTES] Starting Promise.all for table population...');
     const populatedTables = await Promise.all(
       tables.map(async (table) => {
-        // Use the helper function here too for consistency
+        console.log(`[VENUE_ROUTES] Calling getPopulatedTableWithPerGameCost for table ID: ${table._id}`);
         const fullyPopulatedTable = await getPopulatedTableWithPerGameCost(table._id);
+        console.log(`[VENUE_ROUTES] getPopulatedTableWithPerGameCost returned for table ID ${table._id}:`, fullyPopulatedTable ? 'populated' : 'null');
+
         // Ensure perGameCost is correctly attached, even if helper returned null or missing cost
         return fullyPopulatedTable ? { ...fullyPopulatedTable, perGameCost: fullyPopulatedTable.perGameCost || venuePerGameCost } : null;
       })
     );
+    console.log('[VENUE_ROUTES] Promise.all for table population completed.');
 
     // Filter out any nulls if a table couldn't be populated
     const validPopulatedTables = populatedTables.filter(t => t !== null);
+    console.log(`[VENUE_ROUTES] Filtered to ${validPopulatedTables.length} valid populated tables.`);
 
     res.json(validPopulatedTables);
   } catch (error) {
-    console.error('Error fetching detailed tables for venue:', error);
-    res.status(500).json({ message: 'Server error fetching detailed tables.', error: error.message });
+    // CRITICAL: Log the full error object here
+    console.error('[VENUE_ROUTES] Error fetching detailed tables for venue:', error);
+    if (error.stack) {
+        console.error('[VENUE_ROUTES] Error Stack:', error.stack);
+    }
+    res.status(500).json({ message: 'Server error fetching detailed tables.', error: error.message || 'Unknown error' });
   }
 });
 
