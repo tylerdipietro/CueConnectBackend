@@ -188,7 +188,7 @@ router.get('/:venueId/tables-detailed', async (req, res) => {
         const fullyPopulatedTable = await getPopulatedTableWithPerGameCost(table._id);
         console.log(`[VENUE_ROUTES] getPopulatedTableWithPerGameCost returned for table ID ${table._id}:`, fullyPopulatedTable ? 'populated' : 'null');
 
-        // Ensure perGameCost is correctly attached, even if helper returned null or missing cost
+        // Ensure perGameCost is correctly attached, even if helper returned null or missing costs
         return fullyPopulatedTable ? { ...fullyPopulatedTable, perGameCost: fullyPopulatedTable.perGameCost || venuePerGameCost } : null;
       })
     );
